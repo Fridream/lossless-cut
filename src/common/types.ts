@@ -19,6 +19,8 @@ export type PreserveMetadata = 'default' | 'nonglobal' | 'none'
 
 export type WaveformMode = 'big-waveform' | 'waveform';
 
+export type SmartCutPreset = 'veryslow' | 'slower' | 'slow' | 'medium';
+
 export interface Config {
   version: number,
   lastAppVersion: string,
