@@ -608,7 +608,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
       const { segmentNeedsSmartCut } = smartCutData;
 
       // For HEVC videos, dynamically adjust timestamp offset based on distance to next keyframe
-      if (videoStream.codec_name === 'hevc' && segmentNeedsSmartCut) {
+      if (videoStream.codec_name === 'hevc') {
         const { readKeyframesAroundTime } = await import('../ffmpeg');
         const keyframes = await readKeyframesAroundTime({ filePath, streamIndex: videoStream.index, aroundTime: losslessCutFrom + 1, window: 2 });
         const nextKeyframe = keyframes.find((kf) => kf.time > losslessCutFrom);
