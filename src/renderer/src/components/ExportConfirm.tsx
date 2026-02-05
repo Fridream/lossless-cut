@@ -102,6 +102,8 @@ function ExportConfirm({
   setSmartCutCrf,
   smartCutPreset,
   setSmartCutPreset,
+  forceFixConcat,
+  setForceFixConcat,
 } : {
   areWeCutting: boolean,
   segmentsToExport: SegmentToExport[],
@@ -131,6 +133,8 @@ function ExportConfirm({
   setSmartCutCrf: Dispatch<SetStateAction<number>>,
   smartCutPreset: SmartCutPreset,
   setSmartCutPreset: Dispatch<SetStateAction<SmartCutPreset>>,
+  forceFixConcat: boolean,
+  setForceFixConcat: Dispatch<SetStateAction<boolean>>,
 }) {
   const { t } = useTranslation();
 
@@ -583,6 +587,16 @@ function ExportConfirm({
                             <option value="slow">slow</option>
                             <option value="medium">medium</option>
                           </Select>
+                        </td>
+                        <td />
+                      </AnimatedTr>
+
+                      <AnimatedTr>
+                        <td>
+                          {t('Force fix concat error')}
+                        </td>
+                        <td>
+                          <Switch checked={forceFixConcat} onCheckedChange={() => setForceFixConcat((v) => !v)} />
                         </td>
                         <td />
                       </AnimatedTr>

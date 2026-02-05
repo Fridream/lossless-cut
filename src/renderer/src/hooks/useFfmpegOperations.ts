@@ -79,7 +79,7 @@ export async function maybeMkDeepOutDir({ outputDir, fileOutPath }: { outputDir:
 }
 
 
-function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart, isEncoding, lossyMode, enableOverwriteOutput, outputPlaybackRate, cutFromAdjustmentFrames, cutToAdjustmentFrames, appendLastCommandsLog, appendFfmpegCommandLog, smartCutCrf, smartCutPreset }: {
+function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart, isEncoding, lossyMode, enableOverwriteOutput, outputPlaybackRate, cutFromAdjustmentFrames, cutToAdjustmentFrames, appendLastCommandsLog, appendFfmpegCommandLog, smartCutCrf, smartCutPreset, forceFixConcat }: {
   filePath: string | undefined,
   treatInputFileModifiedTimeAsStart: boolean,
   treatOutputFileModifiedTimeAsStart: boolean | null | undefined,
@@ -93,6 +93,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
   appendFfmpegCommandLog: (args: string[]) => void,
   smartCutCrf: number,
   smartCutPreset: string,
+  forceFixConcat: boolean,
 }) {
   const shouldSkipExistingFile = useCallback(async (path: string) => {
     const fileExists = await mainApi.pathExists(path);
@@ -234,6 +235,259 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
       return { haveExcludedStreams: excludedStreamIds.length > 0 };
     } finally {
       if (chaptersPath) await tryDeleteFiles([chaptersPath]);
+    }
+  }, [appendLastCommandsLog, shouldSkipExistingFile, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart]);
+
+  const concatFilesTs = useCallback(async ({ paths, outDir, outPath, metadataFromPath, includeAllStreams, streams, outFormat, ffmpegExperimental, onProgress = () => undefined, preserveMovData, movFastStart, chapters, preserveMetadataOnMerge, videoTimebase }: {
+    paths: string[],
+    outDir: string | undefined,
+    outPath: string,
+    metadataFromPath: string,
+    includeAllStreams: boolean,
+    streams: FFprobeStream[],
+    outFormat?: string | undefined,
+    ffmpegExperimental: boolean,
+    onProgress?: (a: number) => void,
+    preserveMovData: boolean,
+    movFastStart: boolean,
+    chapters: Chapter[] | undefined,
+    preserveMetadataOnMerge: boolean,
+    videoTimebase?: number | undefined,
+  }) => {
+    if (await shouldSkipExistingFile(outPath)) return { haveExcludedStreams: false };
+
+    console.log('Merging files via TS format', { paths }, 'to', outPath);
+
+    const durations = await pMap(paths, async (path) => (await getDuration(path)) ?? 0, { concurrency: 1 });
+    const totalDuration = sum(durations);
+
+    let chaptersPath: string | undefined;
+    if (chapters) {
+      const chaptersWithNames = chapters.map((chapter, i) => ({ ...chapter, name: chapter.name || `Chapter ${i + 1}` }));
+      invariant(outDir != null);
+      chaptersPath = await writeChaptersFfmetadata(outDir, chaptersWithNames);
+    }
+
+    invariant(outDir != null);
+
+    // Separate streams that MPEG-TS doesn't support well (attachment, data)
+    // These will be extracted and re-added later
+    const TS_SAFE_CODECS = {
+      video: ['h264', 'libx264', 'avc', 'hevc', 'libx265', 'h265', 'mpeg2video', 'mpeg1video', 'mpeg4'],
+      audio: ['aac', 'libfdk_aac', 'mp3', 'mp2', 'ac3', 'eac3'],
+    };
+
+    const tsSupportedStreams = streams.filter((s) => (
+      (TS_SAFE_CODECS as Record<string, string[]>)[s.codec_type]?.includes(s.codec_name) ?? false
+    ));
+
+    const unSupportedStreams = streams.filter((s) => !tsSupportedStreams.includes(s));
+
+    const tsFiles: string[] = [];
+    const mkvFiles: string[] = [];
+    let mergedTsPath: string | undefined;
+    let mergedMkvPath: string | undefined;
+
+    try {
+      // Step 1: Convert only TS-compatible streams to TS files
+      for (let i = 0; i < paths.length; i += 1) {
+        const inputPath = paths[i]!;
+        const tsPath = join(outDir, `temp_concat_${Date.now()}_${i}.ts`);
+        tsFiles.push(tsPath);
+
+        console.log(`Converting TS-compatible streams from file ${i + 1}/${paths.length} to TS format: ${inputPath} -> ${tsPath}`);
+
+        // Build map args to include only TS-compatible streams
+        const mapArgs: string[] = [];
+        tsSupportedStreams.forEach((stream) => {
+          mapArgs.push('-map', `0:${stream.index}`);
+        });
+
+        const convertArgs: string[] = [
+          '-hide_banner',
+          '-i', inputPath,
+          ...mapArgs,
+          '-c', 'copy',
+          '-f', 'mpegts',
+          '-y', tsPath,
+        ];
+
+        const result = await runFfmpeg(convertArgs);
+        logStdoutStderr(result);
+      }
+
+      // Step 2: Convert unsupported streams to MKV files (if any exist)
+      if (unSupportedStreams.length > 0) {
+        for (let i = 0; i < paths.length; i += 1) {
+          const inputPath = paths[i]!;
+          const mkvPath = join(outDir, `temp_unsupported_${Date.now()}_${i}.mkv`);
+          mkvFiles.push(mkvPath);
+
+          console.log(`Converting unsupported streams from file ${i + 1}/${paths.length} to MKV format: ${inputPath} -> ${mkvPath}`);
+
+          // Build map args to include only unsupported streams
+          const mapArgs: string[] = [];
+          unSupportedStreams.forEach((stream) => {
+            mapArgs.push('-map', `0:${stream.index}`);
+          });
+
+          const convertArgs: string[] = [
+            '-hide_banner',
+            '-i', inputPath,
+            ...mapArgs,
+            '-c', 'copy',
+            '-f', 'matroska',
+            '-y', mkvPath,
+          ];
+
+          const result = await runFfmpeg(convertArgs);
+          logStdoutStderr(result);
+        }
+      }
+
+      // Step 3: Merge TS files using concat demuxer
+      console.log('Merging TS files:', tsFiles);
+
+      const concatTxt = tsFiles.map((file) => `file 'file:${resolve(file).replaceAll('\'', String.raw`'\''`)}'`).join('\n');
+
+      mergedTsPath = join(outDir, `temp_merged_${Date.now()}.ts`);
+
+      const concatArgs: string[] = [
+        '-hide_banner',
+        '-f', 'concat', '-safe', '0', '-protocol_whitelist', 'file,pipe,fd',
+        '-i', '-',
+        '-c', 'copy',
+        '-f', 'mpegts',
+        '-y', mergedTsPath,
+      ];
+
+      const ffmpegCommandLine = getFfCommandLine('ffmpeg', concatArgs);
+      const fullCommandLine = `echo -e "${concatTxt.replace(/\n/, String.raw`\n`)}" | ${ffmpegCommandLine}`;
+      console.log(fullCommandLine);
+      appendLastCommandsLog(fullCommandLine);
+
+      const concatResult = await runFfmpegConcat({ ffmpegArgs: concatArgs, concatTxt, totalDuration, onProgress });
+      logStdoutStderr(concatResult);
+
+      // Step 4: If there are unsupported streams, merge all MKV files together
+      if (mkvFiles.length > 0) {
+        console.log('Merging unsupported streams from MKV files:', mkvFiles);
+
+        // Merge all MKV files using concat demuxer
+        const mkvConcatTxt = mkvFiles.map((file) => `file 'file:${resolve(file).replaceAll('\'', String.raw`'\''`)}'`).join('\n');
+        mergedMkvPath = join(outDir, `temp_merged_unsupported_${Date.now()}.mkv`);
+
+        const mkvConcatArgs: string[] = [
+          '-hide_banner',
+          '-f', 'concat', '-safe', '0', '-protocol_whitelist', 'file,pipe,fd',
+          '-i', '-',
+          '-c', 'copy',
+          '-f', 'matroska',
+          '-y', mergedMkvPath,
+        ];
+
+        const mkvConcatCommandLine = getFfCommandLine('ffmpeg', mkvConcatArgs);
+        const mkvFullCommandLine = `echo -e "${mkvConcatTxt.replace(/\n/, String.raw`\n`)}" | ${mkvConcatCommandLine}`;
+        console.log(mkvFullCommandLine);
+        appendLastCommandsLog(mkvFullCommandLine);
+
+        const mkvConcatResult = await runFfmpegConcat({ ffmpegArgs: mkvConcatArgs, concatTxt: mkvConcatTxt, totalDuration, onProgress });
+        logStdoutStderr(mkvConcatResult);
+      }
+
+      // Step 5: Convert final output to target format
+      console.log('Merging TS and unsupported streams back into final output');
+
+      let inputArgs: string[] = [];
+      let inputIndex = 0;
+
+      // eslint-disable-next-line no-inner-declarations
+      function addInput(args: string[]) {
+        inputArgs = [...inputArgs, ...args];
+        const retIndex = inputIndex;
+        inputIndex += 1;
+        return retIndex;
+      }
+
+      // Add merged TS as first input
+      addInput(['-i', mergedTsPath]);
+
+      // Add merged MKV as second input
+      if (mergedMkvPath) addInput(['-i', mergedMkvPath]);
+
+      let metadataSourceIndex: number | undefined;
+      if (preserveMetadataOnMerge) {
+        metadataSourceIndex = addInput(['-i', metadataFromPath]);
+      }
+
+      let chaptersInputIndex: number | undefined;
+      if (chaptersPath) {
+        // if chapters, add chapters source file
+        chaptersInputIndex = addInput(getChaptersInputArgs(chaptersPath));
+      }
+
+      const { streamIdsToCopy, excludedStreamIds } = getStreamIdsToCopy({ streams, includeAllStreams });
+      const tsInclude: number[] = [];
+      const mkvInclude: number[] = [];
+      tsSupportedStreams.forEach((s, i) => {
+        if (streamIdsToCopy.includes(s.index)) tsInclude.push(i);
+        tsSupportedStreams[i]!.index = i;
+      });
+      unSupportedStreams.forEach((s, i) => {
+        if (streamIdsToCopy.includes(s.index)) mkvInclude.push(i);
+        unSupportedStreams[i]!.index = i;
+      });
+      const allFilesMeta = { [mergedTsPath]: { streams: tsSupportedStreams } };
+      const copyFileStreams = [{ path: mergedTsPath, streamIds: tsInclude }];
+      if (mergedMkvPath) {
+        allFilesMeta[mergedMkvPath] = { streams: unSupportedStreams };
+        copyFileStreams.push({ path: mergedMkvPath, streamIds: mkvInclude });
+      }
+      const mapStreamsArgs = getMapStreamsArgs({
+        allFilesMeta,
+        copyFileStreams,
+        outFormat,
+        manuallyCopyDisposition: true,
+        needFlac: true, // https://github.com/mifi/lossless-cut/issues/2636
+      });
+
+      const ffmpegArgs = [
+        '-hide_banner',
+
+        ...inputArgs,
+
+        ...mapStreamsArgs,
+
+        ...(metadataSourceIndex != null ? ['-map_metadata', String(metadataSourceIndex)] : []),
+
+        ...(chaptersInputIndex != null ? ['-map_chapters', String(chaptersInputIndex)] : []),
+
+        ...getMovFlags({ preserveMovData, movFastStart }),
+        ...getMatroskaFlags(),
+
+        '-ignore_unknown',
+
+        ...getExperimentalArgs(ffmpegExperimental),
+
+        ...getVideoTimescaleArgs(videoTimebase),
+
+        ...(outFormat ? ['-f', outFormat] : []),
+        '-y', outPath,
+      ];
+
+      const finalCommandLine = getFfCommandLine('ffmpeg', ffmpegArgs);
+      console.log(finalCommandLine);
+      appendLastCommandsLog(finalCommandLine);
+
+      const finalResult = await runFfmpeg(ffmpegArgs);
+      logStdoutStderr(finalResult);
+
+      await transferTimestamps({ inPath: metadataFromPath, outPath, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart, duration: totalDuration });
+
+      return { haveExcludedStreams: excludedStreamIds.length > 0 };
+    } finally {
+      if (chaptersPath) await tryDeleteFiles([chaptersPath]);
+      await tryDeleteFiles([...tsFiles, ...mkvFiles, ...(mergedTsPath ? [mergedTsPath] : []), ...(mergedMkvPath ? [mergedMkvPath] : [])]);
     }
   }, [appendLastCommandsLog, shouldSkipExistingFile, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart]);
 
@@ -654,7 +908,8 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
         // need to re-read streams because indexes may have changed. Using main file as source of streams and metadata
         const { streams: streamsAfterCut } = await readFileFfprobeMeta(losslessPartOutPath);
 
-        await concatFiles({ paths: smartCutSegmentsToConcat, outDir: outputDir, outPath: finalOutPath, metadataFromPath: losslessPartOutPath, outFormat, includeAllStreams: true, streams: streamsAfterCut, ffmpegExperimental, preserveMovData, movFastStart, chapters, preserveMetadataOnMerge, videoTimebase, onProgress: onConcatProgress });
+        const concatFilesFunction = forceFixConcat ? concatFilesTs : concatFiles;
+        await concatFilesFunction({ paths: smartCutSegmentsToConcat, outDir: outputDir, outPath: finalOutPath, metadataFromPath: losslessPartOutPath, outFormat, includeAllStreams: true, streams: streamsAfterCut, ffmpegExperimental, preserveMovData, movFastStart, chapters, preserveMetadataOnMerge, videoTimebase, onProgress: onConcatProgress });
         return { path: finalOutPath, created: true };
       } finally {
         await tryDeleteFiles(smartCutSegmentsToConcat);
@@ -666,7 +921,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
     } finally {
       if (chaptersPath) await tryDeleteFiles([chaptersPath]);
     }
-  }, [shouldSkipExistingFile, isEncoding, filePath, lossyMode, losslessCutSingle, cutEncodeSmartPart, concatFiles]);
+  }, [shouldSkipExistingFile, isEncoding, filePath, lossyMode, losslessCutSingle, cutEncodeSmartPart, concatFiles, concatFilesTs, forceFixConcat]);
 
   const concatCutSegments = useCallback(async ({ customOutDir, outFormat, segmentPaths, ffmpegExperimental, onProgress, preserveMovData, movFastStart, chapterNames, preserveMetadataOnMerge, mergedOutFilePath }: {
     customOutDir: string | undefined,
