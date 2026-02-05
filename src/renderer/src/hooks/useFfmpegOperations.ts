@@ -6,7 +6,7 @@ import invariant from 'tiny-invariant';
 import i18n from 'i18next';
 
 import { getSuffixedOutPath, transferTimestamps, getOutFileExtension, getOutDir, deleteDispositionValue, getHtml5ifiedPath, unlinkWithRetry, getFrameDuration, isMac, html5ifiedPrefix, html5dummySuffix } from '../util';
-import { isCuttingStart, isCuttingEnd, runFfmpegWithProgress, getFfCommandLine, getDuration, createChaptersFromSegments, readFileFfprobeMeta, getExperimentalArgs, getVideoTimescaleArgs, logStdoutStderr, runFfmpegConcat, RefuseOverwriteError, runFfmpeg } from '../ffmpeg';
+import { isCuttingStart, isCuttingEnd, runFfmpegWithProgress, getFfCommandLine, getDuration, createChaptersFromSegments, readFileFfprobeMeta, readKeyframesAroundTime, getExperimentalArgs, getVideoTimescaleArgs, logStdoutStderr, runFfmpegConcat, RefuseOverwriteError, runFfmpeg } from '../ffmpeg';
 import { getMapStreamsArgs, getStreamIdsToCopy } from '../util/streams';
 import { needsSmartCut, getCodecParams } from '../smartcut';
 import { getGuaranteedSegments, isDurationValid } from '../segments';
@@ -79,7 +79,7 @@ export async function maybeMkDeepOutDir({ outputDir, fileOutPath }: { outputDir:
 }
 
 
-function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart, isEncoding, lossyMode, enableOverwriteOutput, outputPlaybackRate, cutFromAdjustmentFrames, cutToAdjustmentFrames, appendLastCommandsLog, encCustomBitrate, appendFfmpegCommandLog }: {
+function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart, isEncoding, lossyMode, enableOverwriteOutput, outputPlaybackRate, cutFromAdjustmentFrames, cutToAdjustmentFrames, appendLastCommandsLog, appendFfmpegCommandLog, smartCutCrf, smartCutPreset }: {
   filePath: string | undefined,
   treatInputFileModifiedTimeAsStart: boolean,
   treatOutputFileModifiedTimeAsStart: boolean | null | undefined,
@@ -90,8 +90,9 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
   cutFromAdjustmentFrames: number,
   cutToAdjustmentFrames: number,
   appendLastCommandsLog: (a: string) => void,
-  encCustomBitrate: number | undefined,
   appendFfmpegCommandLog: (args: string[]) => void,
+  smartCutCrf: number,
+  smartCutPreset: string,
 }) {
   const shouldSkipExistingFile = useCallback(async (path: string) => {
     const fileExists = await mainApi.pathExists(path);
@@ -427,13 +428,12 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
   }, [appendFfmpegCommandLog, cutFromAdjustmentFrames, cutToAdjustmentFrames, filePath, getOutputPlaybackRateArgs, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart]);
 
   // inspired by https://gist.github.com/fernandoherreradelasheras/5eca67f4200f1a7cc8281747da08496e
-  const cutEncodeSmartPart = useCallback(async ({ cutFrom, cutTo, outPath, outFormat, videoCodec, videoBitrate, videoTimebase, allFilesMeta, copyFileStreams, videoStreamIndex, ffmpegExperimental }: {
+  const cutEncodeSmartPart = useCallback(async ({ cutFrom, cutTo, outPath, outFormat, videoCodec, videoTimebase, allFilesMeta, copyFileStreams, videoStreamIndex, ffmpegExperimental }: {
     cutFrom: number,
     cutTo: number,
     outPath: string,
     outFormat: string,
     videoCodec: string,
-    videoBitrate: number,
     videoTimebase: number,
     allFilesMeta: AllFilesMeta,
     copyFileStreams: CopyfileStreams,
@@ -446,8 +446,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
       if (streamIndex !== videoStreamIndex) return undefined;
 
       const args = [
-        `-c:${outputIndex}`, videoCodec,
-        `-b:${outputIndex}`, String(videoBitrate),
+        `-c:${outputIndex}`, videoCodec, '-crf', String(smartCutCrf), '-preset', smartCutPreset,
       ];
 
       // seems like ffmpeg handles this itself well when encoding same source file
@@ -488,7 +487,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
 
     appendFfmpegCommandLog(ffmpegArgs);
     await runFfmpeg(ffmpegArgs);
-  }, [appendFfmpegCommandLog, filePath]);
+  }, [appendFfmpegCommandLog, filePath, smartCutCrf, smartCutPreset]);
 
   const cutMultiple = useCallback(async ({
     outputDir, customOutDir, segments: segmentsIn, cutFileNames, fileDuration, rotation, detectedFps, onProgress: onTotalProgress, keyframeCut, copyFileStreams, allFilesMeta, outFormat, shortestFlag, ffmpegExperimental, preserveMetadata, preserveMetadataOnMerge, preserveMovData, preserveChapters, movFastStart, avoidNegativeTs, customTagsByFile, paramsByStreamId, chapters,
@@ -583,7 +582,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
         invariant(sourceCodecParams.videoTimebase != null);
         invariant(filePath != null);
         invariant(outFormat != null);
-        await cutEncodeSmartPart({ cutFrom, cutTo, outPath, outFormat, videoCodec, videoBitrate: encCustomBitrate != null ? encCustomBitrate * 1000 : sourceCodecParams.videoBitrate, videoStreamIndex: videoStream.index, videoTimebase: sourceCodecParams.videoTimebase, allFilesMeta, copyFileStreams: copyFileStreamsFiltered, ffmpegExperimental });
+        await cutEncodeSmartPart({ cutFrom, cutTo, outPath, outFormat, videoCodec, videoStreamIndex: videoStream.index, videoTimebase: sourceCodecParams.videoTimebase, allFilesMeta, copyFileStreams: copyFileStreamsFiltered, ffmpegExperimental });
       }
 
       const cutEncodeWholePart = async () => {
@@ -596,7 +595,19 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
         return cutEncodeWholePart();
       }
 
-      const { losslessCutFrom, segmentNeedsSmartCut } = await needsSmartCut({ path: filePath, desiredCutFrom, videoStream });
+      const smartCutData = await needsSmartCut({ path: filePath, desiredCutFrom, videoStream });
+      let { losslessCutFrom } = smartCutData;
+      const { segmentNeedsSmartCut } = smartCutData;
+
+      // For HEVC videos, dynamically adjust timestamp offset based on distance to next keyframe
+      if (videoStream.codec_name === 'hevc') {
+        const keyframes = await readKeyframesAroundTime({ filePath, streamIndex: videoStream.index, aroundTime: losslessCutFrom + 1, window: 2 });
+        const nextKeyframe = keyframes.find((kf) => kf.time > losslessCutFrom);
+        const offset = nextKeyframe ? Math.min((nextKeyframe.time - losslessCutFrom) / 2, 0.5) : 0.5;
+        losslessCutFrom += offset;
+        console.log('HEVC video detected, calculated dynamic offset:', { nextKeyframe: nextKeyframe?.time, offset });
+      }
+
       if (segmentNeedsSmartCut && !detectedFps) throw new UserFacingError(i18n.t('Smart cut is not possible when FPS is unknown'));
       console.log('Smart cut on video stream', videoStream.index);
 
@@ -655,7 +666,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
     } finally {
       if (chaptersPath) await tryDeleteFiles([chaptersPath]);
     }
-  }, [shouldSkipExistingFile, isEncoding, filePath, lossyMode, losslessCutSingle, cutEncodeSmartPart, encCustomBitrate, concatFiles]);
+  }, [shouldSkipExistingFile, isEncoding, filePath, lossyMode, losslessCutSingle, cutEncodeSmartPart, concatFiles]);
 
   const concatCutSegments = useCallback(async ({ customOutDir, outFormat, segmentPaths, ffmpegExperimental, onProgress, preserveMovData, movFastStart, chapterNames, preserveMetadataOnMerge, mergedOutFilePath }: {
     customOutDir: string | undefined,

@@ -23,7 +23,7 @@ import type { SegmentToExport } from '../types';
 import type { GenerateOutFileNames } from '../util/outputNameTemplate';
 import { defaultCutFileTemplate, defaultCutMergedFileTemplate } from '../util/outputNameTemplate';
 import type { FFprobeStream } from '../../../common/ffprobe';
-import type { AvoidNegativeTs, PreserveMetadata } from '../../../common/types';
+import type { AvoidNegativeTs, PreserveMetadata, SmartCutPreset } from '../../../common/types';
 import TextInput from './TextInput';
 import type { UseSegments } from '../hooks/useSegments';
 import ExportSheet from './ExportSheet';
@@ -95,11 +95,13 @@ function ExportConfirm({
   mainCopiedThumbnailStreams,
   needSmartCut,
   isEncoding,
-  encBitrate,
-  setEncBitrate,
   toggleSettings,
   outputPlaybackRate,
   lossyMode,
+  smartCutCrf,
+  setSmartCutCrf,
+  smartCutPreset,
+  setSmartCutPreset,
 } : {
   areWeCutting: boolean,
   segmentsToExport: SegmentToExport[],
@@ -122,11 +124,13 @@ function ExportConfirm({
   mainCopiedThumbnailStreams: FFprobeStream[],
   needSmartCut: boolean,
   isEncoding: boolean,
-  encBitrate: number | undefined,
-  setEncBitrate: Dispatch<SetStateAction<number | undefined>>,
   toggleSettings: () => void,
   outputPlaybackRate: number,
   lossyMode: LossyMode | undefined,
+  smartCutCrf: number,
+  setSmartCutCrf: Dispatch<SetStateAction<number>>,
+  smartCutPreset: SmartCutPreset,
+  setSmartCutPreset: Dispatch<SetStateAction<SmartCutPreset>>,
 }) {
   const { t } = useTranslation();
 
@@ -273,15 +277,11 @@ function ExportConfirm({
 
   const canEditSegTemplate = !willMerge || !autoDeleteMergedSegments;
 
-  const handleEncBitrateToggle = useCallback((checked: boolean) => {
-    setEncBitrate(() => (checked ? undefined : 10000));
-  }, [setEncBitrate]);
-
-  const handleEncBitrateChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSmartCutCrfChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const v = parseInt(e.target.value, 10);
-    if (Number.isNaN(v) || v <= 0) return;
-    setEncBitrate(v);
-  }, [setEncBitrate]);
+    if (Number.isNaN(v) || v < 0 || v > 51) return;
+    setSmartCutCrf(v);
+  }, [setSmartCutCrf]);
 
   return (
     <ExportSheet
@@ -558,6 +558,37 @@ function ExportConfirm({
                     </td>
                   </AnimatedTr>
 
+                  {isEncoding && (
+                    <>
+                      <AnimatedTr>
+                        <td>
+                          {t('Smart cut quality (CRF)')}
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+                            <TextInput value={smartCutCrf} onChange={handleSmartCutCrfChange} style={{ width: '4em', flexGrow: 0, marginRight: '.3em' }} />
+                          </div>
+                        </td>
+                        <td />
+                      </AnimatedTr>
+
+                      <AnimatedTr>
+                        <td>
+                          {t('Smart cut encoding speed')}
+                        </td>
+                        <td>
+                          <Select value={smartCutPreset} onChange={(e) => setSmartCutPreset(e.target.value as SmartCutPreset)} style={{ height: 20, marginLeft: 5 }}>
+                            <option value="veryslow">veryslow</option>
+                            <option value="slower">slower</option>
+                            <option value="slow">slow</option>
+                            <option value="medium">medium</option>
+                          </Select>
+                        </td>
+                        <td />
+                      </AnimatedTr>
+                    </>
+                  )}
+
                   {!isEncoding && (
                     <AnimatedTr>
                       <td>
@@ -573,27 +604,6 @@ function ExportConfirm({
                     </AnimatedTr>
                   )}
                 </>
-              )}
-
-
-              {isEncoding && (
-                <AnimatedTr>
-                  <td>
-                    {t('Smart cut auto detect bitrate')}
-                  </td>
-                  <td>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
-                      {encBitrate != null && (
-                        <>
-                          <TextInput value={encBitrate} onChange={handleEncBitrateChange} style={{ width: '4em', flexGrow: 0, marginRight: '.3em' }} />
-                          <span style={{ marginRight: '.3em' }}>{t('kbit/s')}</span>
-                        </>
-                      )}
-                      <span><Switch checked={encBitrate == null} onCheckedChange={handleEncBitrateToggle} /></span>
-                    </div>
-                  </td>
-                  <td />
-                </AnimatedTr>
               )}
 
               {lossyMode != null && (

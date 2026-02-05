@@ -21,6 +21,8 @@ export type WaveformMode = 'big-waveform' | 'waveform';
 
 export type EnableImportChapters = 'always' | 'never' | 'ask'
 
+export type SmartCutPreset = 'veryslow' | 'slower' | 'slow' | 'medium';
+
 export interface Config {
   version: number,
   lastAppVersion: string,
