@@ -4,15 +4,6 @@ on:
   push:
     tags:
       - 'v*'
-  schedule:
-    - cron: '0 10 * * *'
-  workflow_dispatch:
-    inputs:
-      tmate_enabled:
-        type: boolean
-        description: 'Run the build with tmate debugging enabled (https://github.com/marketplace/actions/debugging-with-tmate)'
-        required: false
-        default: false
 
 jobs:
   release:
@@ -25,17 +16,9 @@ jobs:
 
     strategy:
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
-#        os: [windows-latest]
+        os: [windows-latest]
 
     steps:
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.tmate_enabled }}
-        with:
-          detached: true
-  
-        # Windows fix. See https://github.com/actions/checkout/issues/226
       - run: git config --global core.autocrlf false
 
       - uses: actions/checkout@v6
@@ -146,33 +129,3 @@ jobs:
           script: |
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN'])
             core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL'])
-
-      - name: (MacOS) Upload artifacts
-        if: runner.os == 'macOS' && env.is_tag == 'false'
-        env:
-          ACTIONS_RUNTIME_TOKEN: ${{ env.ACTIONS_RUNTIME_TOKEN }}
-          ACTIONS_RESULTS_URL: ${{ env.ACTIONS_RESULTS_URL }}
-        run: |
-          yarn upload-artifacts dist/LosslessCut-mac-arm64.dmg
-          yarn upload-artifacts dist/LosslessCut-mac-x64.dmg
-          yarn upload-artifacts --name screenshot-mac.jpeg screenshot.jpeg
-
-      - name: (Windows) Upload artifacts
-        if: runner.os == 'Windows' && env.is_tag == 'false'
-        env:
-          ACTIONS_RUNTIME_TOKEN: ${{ env.ACTIONS_RUNTIME_TOKEN }}
-          ACTIONS_RESULTS_URL: ${{ env.ACTIONS_RESULTS_URL }}
-        run: |
-          yarn upload-artifacts dist/LosslessCut-win-x64.7z
-          yarn upload-artifacts --name screenshot-windows.jpeg screenshot.jpeg
-
-      - name: (Linux) Upload artifacts
-        if: runner.os == 'Linux' && env.is_tag == 'false'
-        env:
-          ACTIONS_RUNTIME_TOKEN: ${{ env.ACTIONS_RUNTIME_TOKEN }}
-          ACTIONS_RESULTS_URL: ${{ env.ACTIONS_RESULTS_URL }}
-        run: |
-          yarn upload-artifacts dist/LosslessCut-linux-arm64.tar.bz2
-          yarn upload-artifacts dist/LosslessCut-linux-armv7l.tar.bz2
-          yarn upload-artifacts dist/LosslessCut-linux-x64.tar.bz2
-          yarn upload-artifacts --name screenshot-linux.jpeg screenshot.jpeg
