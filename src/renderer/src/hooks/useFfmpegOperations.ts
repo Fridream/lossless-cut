@@ -849,18 +849,12 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
         return cutEncodeWholePart();
       }
 
-      const smartCutData = await needsSmartCut({ path: filePath, desiredCutFrom, videoStream });
-      let { losslessCutFrom } = smartCutData;
-      const { segmentNeedsSmartCut } = smartCutData;
+      const { losslessCutFrom, segmentNeedsSmartCut } = await needsSmartCut({ path: filePath, desiredCutFrom, videoStream });
 
-      // For HEVC videos, dynamically adjust timestamp offset based on distance to next keyframe
-      if (videoStream.codec_name === 'hevc') {
-        const keyframes = await readKeyframesAroundTime({ filePath, streamIndex: videoStream.index, aroundTime: losslessCutFrom + 1, window: 2 });
-        const nextKeyframe = keyframes.find((kf) => kf.time > losslessCutFrom);
-        const offset = nextKeyframe ? Math.min((nextKeyframe.time - losslessCutFrom) / 2, 0.5) : 0.5;
-        losslessCutFrom += offset;
-        console.log('HEVC video detected, calculated dynamic offset:', { nextKeyframe: nextKeyframe?.time, offset });
-      }
+      const keyframes = await readKeyframesAroundTime({ filePath, streamIndex: videoStream.index, aroundTime: losslessCutFrom + 1, window: 2 });
+      const nextKeyframe = keyframes.find((kf) => kf.time > losslessCutFrom);
+      const offset = nextKeyframe ? Math.min((nextKeyframe.time - losslessCutFrom) / 2, 0.5) : 0.5;
+      console.log('Calculated dynamic offset:', { nextKeyframe: nextKeyframe?.time, offset });
 
       if (segmentNeedsSmartCut && !detectedFps) throw new UserFacingError(i18n.t('Smart cut is not possible when FPS is unknown'));
       console.log('Smart cut on video stream', videoStream.index);
@@ -886,7 +880,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
 
       // for smart cut we need to use keyframe cut here, and no avoid_negative_ts
       await losslessCutSingle({
-        cutFrom: losslessCutFrom, cutTo, chaptersPath, outPath: losslessPartOutPath, copyFileStreams: copyFileStreamsFiltered, keyframeCut: true, avoidNegativeTs: undefined, fileDuration, rotation, allFilesMeta, outFormat, shortestFlag, ffmpegExperimental, preserveMetadata, preserveMovData, preserveChapters, movFastStart, customTagsByFile, paramsByStreamId, videoTimebase, onProgress,
+        cutFrom: losslessCutFrom + offset, cutTo, chaptersPath, outPath: losslessPartOutPath, copyFileStreams: copyFileStreamsFiltered, keyframeCut: true, avoidNegativeTs: undefined, fileDuration, rotation, allFilesMeta, outFormat, shortestFlag, ffmpegExperimental, preserveMetadata, preserveMovData, preserveChapters, movFastStart, customTagsByFile, paramsByStreamId, videoTimebase, onProgress,
       });
 
       // We don't need to concat, just return the single cut file (we may need smart cut in other segments though)
