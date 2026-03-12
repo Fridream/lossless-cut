@@ -4,7 +4,7 @@ import minBy from 'lodash/minBy';
 import maxBy from 'lodash/maxBy';
 import invariant from 'tiny-invariant';
 
-import type { DefiniteSegmentBase, PlaybackMode, SegmentBase, SegmentTags, SegmentToExport, StateSegment } from './types';
+import type { CropArea, DefiniteSegmentBase, PlaybackMode, SegmentBase, SegmentTags, SegmentToExport, StateSegment } from './types';
 
 
 export const isDurationValid = (duration?: number): duration is number => duration != null && Number.isFinite(duration) && duration > 0;
@@ -16,6 +16,7 @@ export const createSegment = (props?: {
   tags?: unknown | undefined,
   initial?: true,
   selected?: boolean,
+  cropArea?: CropArea | undefined,
 }): Omit<StateSegment, 'segColorIndex'> => ({
   start: props?.start ?? 0,
   end: props?.end,
@@ -30,6 +31,7 @@ export const createSegment = (props?: {
     : undefined,
 
   ...(props?.initial && { initial: true }),
+  ...(props?.cropArea && { cropArea: props.cropArea }),
 });
 
 export const addSegmentColorIndex = (segment: Omit<StateSegment, 'segColorIndex'>, segColorIndex: number): StateSegment => ({
@@ -38,9 +40,9 @@ export const addSegmentColorIndex = (segment: Omit<StateSegment, 'segColorIndex'
 });
 
 export const mapSaveableSegments = (segments: StateSegment[]) => segments.map(({
-  start, end, name, tags, selected,
+  start, end, name, tags, selected, cropArea,
 }) => ({
-  start, end, name, tags, selected,
+  start, end, name, tags, selected, cropArea,
 }));
 
 // in the past we had non-string tags

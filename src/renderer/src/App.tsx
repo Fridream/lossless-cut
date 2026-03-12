@@ -91,8 +91,9 @@ import type { GenerateMergedOutFileNamesParams, GeneratedOutFileNames } from './
 import { generateCutFileNames as generateCutFileNamesRaw, generateCutMergedFileNames as generateCutMergedFileNamesRaw, generateMergedFileNames as generateMergedFileNamesRaw, defaultCutFileTemplate, defaultCutMergedFileTemplate, defaultMergedFileTemplate } from './util/outputNameTemplate';
 import { rightBarWidth, leftBarWidth, ffmpegExtractWindow, zoomMax } from './util/constants';
 import BigWaveform from './components/BigWaveform';
+import CropSelector from './components/CropSelector';
 
-import type { BatchFile, Chapter, CustomTagsByFile, EdlExportType, EdlFileType, EdlImportType, FfmpegCommandLog, FilesMeta, FileStats, ParamsByStreamId, PlaybackMode, SegmentBase, SegmentColorIndex, SegmentTags, StateSegment, TunerType } from './types';
+import type { BatchFile, Chapter, CropArea, CustomTagsByFile, EdlExportType, EdlFileType, EdlImportType, FfmpegCommandLog, FilesMeta, FileStats, ParamsByStreamId, PlaybackMode, SegmentBase, SegmentColorIndex, SegmentTags, StateSegment, TunerType } from './types';
 import { goToTimecodeDirectArgsSchema, openFilesActionArgsSchema } from './types';
 import type { CaptureFormat, KeyboardAction, ApiActionRequest, SmartCutPreset } from '../../common/types.js';
 import type { FFprobeChapter, FFprobeStream } from '../../common/ffprobe.js';
@@ -171,6 +172,11 @@ function App() {
   const [mediaSourceQuality, setMediaSourceQuality] = useState(0);
   const [exportCount, setExportCount] = useState(0);
   const [maxKeyframes, setMaxKeyframes] = useState(1000);
+
+  // Crop/selection area state
+  const [isCropSelecting, setIsCropSelecting] = useState(false);
+  const [activeCropArea, setActiveCropArea] = useState<CropArea | undefined>();
+  const [cropActiveSegId, setCropActiveSegId] = useState<string | undefined>();
 
   const incrementMediaSourceQuality = useCallback(() => setMediaSourceQuality((v) => (v + 1) % mediaSourceQualities.length), []);
 
@@ -395,6 +401,122 @@ function App() {
   const jumpCutEnd = useCallback(() => jumpSegEnd(currentSegIndexSafe), [currentSegIndexSafe, jumpSegEnd]);
   const jumpTimelineStart = useCallback(() => seekAbs(0), [seekAbs]);
   const jumpTimelineEnd = useCallback(() => seekAbs(fileDuration), [fileDuration, seekAbs]);
+
+  // Crop area: start selecting
+  const startCropSelection = useCallback(() => {
+    if (!isFileOpened) return;
+    pause();
+    setActiveCropArea(undefined);
+    setIsCropSelecting(true);
+    if (currentCutSeg) setCropActiveSegId(currentCutSeg.segId);
+  }, [isFileOpened, pause, currentCutSeg]);
+
+  // Crop area: complete selection
+  const onCropComplete = useCallback((cropArea: CropArea) => {
+    setIsCropSelecting(false);
+    setActiveCropArea(cropArea);
+    // Save crop area to the current segment immediately
+    if (currentCutSeg) {
+      updateSegAtIndex(currentSegIndexSafe, { cropArea });
+      setCropActiveSegId(currentCutSeg.segId);
+    }
+  }, [currentCutSeg, currentSegIndexSafe, updateSegAtIndex]);
+
+  // Crop area: reset/restore
+  const resetCropArea = useCallback(() => {
+    setActiveCropArea(undefined);
+    setIsCropSelecting(false);
+    setCropActiveSegId(undefined);
+    // Remove crop area from the current segment
+    if (currentCutSeg) {
+      updateSegAtIndex(currentSegIndexSafe, { cropArea: undefined });
+    }
+  }, [currentCutSeg, currentSegIndexSafe, updateSegAtIndex]);
+
+  // When setCutEnd is called, save crop data and reset zoom
+  const originalSetCutEnd = setCutEnd;
+  const setCutEndWithCrop = useCallback(() => {
+    originalSetCutEnd();
+    // After setting end, reset the active crop zoom (the data is already saved in the segment)
+    setActiveCropArea(undefined);
+    setCropActiveSegId(undefined);
+    setIsCropSelecting(false);
+  }, [originalSetCutEnd]);
+
+  // When double-clicking a segment, apply its crop area
+  const jumpSegStartWithCrop = useCallback((index: number) => {
+    const seg = cutSegments[index];
+    if (seg != null) {
+      seekAbs(seg.start);
+      if (seg.cropArea) {
+        setActiveCropArea(seg.cropArea);
+        setCropActiveSegId(seg.segId);
+      } else {
+        setActiveCropArea(undefined);
+        setCropActiveSegId(undefined);
+      }
+    }
+  }, [cutSegments, seekAbs]);
+
+  // Auto-restore crop when playback leaves the cropped segment
+  useEffect(() => {
+    if (!cropActiveSegId || !activeCropArea) return;
+    const seg = cutSegments.find((s) => s.segId === cropActiveSegId);
+    if (!seg || seg.end == null) return;
+    if (relevantTime < seg.start || relevantTime > seg.end) {
+      setActiveCropArea(undefined);
+      setCropActiveSegId(undefined);
+    }
+  }, [relevantTime, cropActiveSegId, activeCropArea, cutSegments]);
+
+  const videoStyleWithCrop = useMemo<CSSProperties>(() => {
+    if (!activeCropArea) return videoStyle;
+    return { width: '100%', height: '100%' };
+  }, [activeCropArea]);
+
+  // Compute the video style with crop zoom applied
+  const wrapperStyleWithCrop = useMemo<CSSProperties>(() => {
+    if (!activeCropArea) return { position: 'relative', width: '100%', height: '100%' };
+
+    const vw = videoRef.current!.videoWidth;
+    const vh = videoRef.current!.videoHeight;
+
+    const cropX = Math.ceil((activeCropArea.x * vw) / 2) * 2;
+    const cropY = Math.ceil((activeCropArea.y * vh) / 2) * 2;
+    const cropXe = Math.floor(((activeCropArea.x + activeCropArea.w) * vw) / 2) * 2;
+    const cropYe = Math.floor(((activeCropArea.y + activeCropArea.h) * vh) / 2) * 2;
+    const cropW = Math.max(2, cropXe - cropX);
+    const cropH = Math.max(2, cropYe - cropY);
+
+    const x = cropX / vw;
+    const y = cropY / vh;
+    const w = cropW / vw;
+    const h = cropH / vh;
+
+    const scale = Math.min(1 / w, 1 / h);
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+
+    return {
+      position: 'relative',
+      aspectRatio: `${videoRef.current?.videoWidth} / ${videoRef.current?.videoHeight}`,
+      maxWidth: '100%',
+      maxHeight: '100%',
+      flexShrink: 0,
+      overflow: 'hidden',
+      transformOrigin: `${cx * 100}% ${cy * 100}%`,
+      transform: `translate(${(0.5 - cx) * 100}%, ${(0.5 - cy) * 100}%) scale(${scale})`,
+      clipPath: `polygon(
+        ${x * 100}% ${y * 100}%,
+        ${(x + w) * 100}% ${y * 100}%,
+        ${(x + w) * 100}% ${(y + h) * 100}%,
+        ${x * 100}% ${(y + h) * 100}%
+      )`,
+    };
+  }, [activeCropArea, videoRef]);
+
+  // Whether the crop button should show "restore" mode
+  const isCropActive = activeCropArea != null || isCropSelecting;
 
   // const getSafeCutTime = useCallback((cutTime, next) => ffmpeg.getSafeCutTime(neighbouringFrames, cutTime, next), [neighbouringFrames]);
 
@@ -672,6 +794,9 @@ function App() {
     setExportConfirmOpen(false);
     setOutputPlaybackRateState(1);
     setCurrentFileExportCount(0);
+    setActiveCropArea(undefined);
+    setIsCropSelecting(false);
+    setCropActiveSegId(undefined);
   }, [videoRef, setCommandedTime, setPlaybackRate, setPreviewFilePath, setUsingDummyVideo, setPlaying, playingRef, setPlaybackMode, cutSegmentsHistory, setDetectedFileFormat, setCopyStreamIdsByFile, setThumbnails, setSubtitlesByStreamId, setOutputPlaybackRateState]);
 
 
@@ -1978,7 +2103,7 @@ function App() {
       captureSnapshotAsCoverArt,
       captureSnapshotToClipboard,
       setCutStart,
-      setCutEnd,
+      setCutEnd: setCutEndWithCrop,
       cleanupFilesDialog,
       splitCurrentSegment,
       focusSegmentAtCursor,
@@ -2102,7 +2227,7 @@ function App() {
     };
 
     return ret;
-  }, [togglePlaySelectedSegments, toggleLoopSelectedSegments, pause, timelineToggleComfortZoom, captureSnapshot, captureSnapshotAsCoverArt, captureSnapshotToClipboard, setCutStart, setCutEnd, cleanupFilesDialog, splitCurrentSegment, focusSegmentAtCursor, selectSegmentsAtCursor, increaseRotation, jumpCutStart, jumpCutEnd, jumpTimelineStart, jumpTimelineEnd, batchOpenSelectedFile, closeBatch, addSegment, duplicateCurrentSegment, toggleLastCommands, extractCurrentSegmentFramesAsImages, extractSelectedSegmentsFramesAsImages, reorderSegsByStartTime, invertAllSegments, fillSegmentsGaps, combineOverlappingSegments, combineSelectedSegments, createFixedDurationSegments, createNumSegments, createFixedByteSizedSegments, createRandomSegments, alignSegmentTimesToKeyframes, shuffleSegments, clearSegments, toggleSegmentsList, toggleStreamsSelector, extractAllStreams, convertFormatBatch, concatBatch, toggleCaptureFormat, toggleStripAudio, toggleStripVideo, toggleStripSubtitle, toggleStripThumbnail, toggleStripAll, toggleDarkMode, askStartTimeOffset, deselectAllSegments, selectAllSegments, selectOnlyCurrentSegment, editCurrentSegmentTags, toggleCurrentSegmentSelected, invertSelectedSegments, removeSelectedSegments, tryFixInvalidDuration, shiftAllSegmentTimes, toggleMuted, copySegmentsToClipboard, handleShowStreamsSelectorClick, openFilesDialog, openDirDialog, toggleSettings, detectBlackScenes, detectSilentScenes, detectSceneChanges, readAllKeyframes, createSegmentsFromKeyframes, toggleWaveformMode, toggleShowThumbnails, toggleShowKeyframes, showIncludeExternalStreamsDialog, toggleFullscreenVideo, selectAllMarkers, selectSegmentsByLabel, selectSegmentsByExpr, labelSelectedSegments, mutateSegmentsByExpr, toggleKeyboardShortcuts, generateOverviewWaveform, checkFileOpened, cutSegments, seekRel, keyboardSeekAccFactor, togglePlay, play, userChangePlaybackRate, goToTimecode, keyboardNormalSeekSpeed, keyboardSeekSpeed2, keyboardSeekSpeed3, seekRelPercent, seekClosestKeyframe, shortStep, jumpSeg, zoomRel, batchFileJump, removeSegment, currentSegIndexSafe, cutSegmentsHistory, labelSegment, onExportPress, userHtml5ifyCurrentFile, toggleKeyframeCut, applyEnabledStreamsFilter, setPlaybackVolume, commandedTimeRef, closeFileWithConfirm, openSendReportDialogWithState]);
+  }, [togglePlaySelectedSegments, toggleLoopSelectedSegments, pause, timelineToggleComfortZoom, captureSnapshot, captureSnapshotAsCoverArt, captureSnapshotToClipboard, setCutStart, setCutEndWithCrop, cleanupFilesDialog, splitCurrentSegment, focusSegmentAtCursor, selectSegmentsAtCursor, increaseRotation, jumpCutStart, jumpCutEnd, jumpTimelineStart, jumpTimelineEnd, batchOpenSelectedFile, closeBatch, addSegment, duplicateCurrentSegment, toggleLastCommands, extractCurrentSegmentFramesAsImages, extractSelectedSegmentsFramesAsImages, reorderSegsByStartTime, invertAllSegments, fillSegmentsGaps, combineOverlappingSegments, combineSelectedSegments, createFixedDurationSegments, createNumSegments, createFixedByteSizedSegments, createRandomSegments, alignSegmentTimesToKeyframes, shuffleSegments, clearSegments, toggleSegmentsList, toggleStreamsSelector, extractAllStreams, convertFormatBatch, concatBatch, toggleCaptureFormat, toggleStripAudio, toggleStripVideo, toggleStripSubtitle, toggleStripThumbnail, toggleStripAll, toggleDarkMode, askStartTimeOffset, deselectAllSegments, selectAllSegments, selectOnlyCurrentSegment, editCurrentSegmentTags, toggleCurrentSegmentSelected, invertSelectedSegments, removeSelectedSegments, tryFixInvalidDuration, shiftAllSegmentTimes, toggleMuted, copySegmentsToClipboard, handleShowStreamsSelectorClick, openFilesDialog, openDirDialog, toggleSettings, detectBlackScenes, detectSilentScenes, detectSceneChanges, readAllKeyframes, createSegmentsFromKeyframes, toggleWaveformMode, toggleShowThumbnails, toggleShowKeyframes, showIncludeExternalStreamsDialog, toggleFullscreenVideo, selectAllMarkers, selectSegmentsByLabel, selectSegmentsByExpr, labelSelectedSegments, mutateSegmentsByExpr, toggleKeyboardShortcuts, generateOverviewWaveform, checkFileOpened, cutSegments, seekRel, keyboardSeekAccFactor, togglePlay, play, userChangePlaybackRate, goToTimecode, keyboardNormalSeekSpeed, keyboardSeekSpeed2, keyboardSeekSpeed3, seekRelPercent, seekClosestKeyframe, shortStep, jumpSeg, zoomRel, batchFileJump, removeSegment, currentSegIndexSafe, cutSegmentsHistory, labelSegment, onExportPress, userHtml5ifyCurrentFile, toggleKeyframeCut, applyEnabledStreamsFilter, setPlaybackVolume, commandedTimeRef, closeFileWithConfirm, openSendReportDialogWithState]);
 
   const getKeyboardAction = useCallback((action: MainKeyboardAction) => mainActions[action], [mainActions]);
 
@@ -2441,6 +2566,9 @@ function App() {
                 setStreamsSelectorShown={setStreamsSelectorShown}
                 selectedSegments={segmentsOrInverse.selected}
                 toggleDarkMode={toggleDarkMode}
+                isCropActive={isCropActive}
+                onCropClick={startCropSelection}
+                onCropResetClick={resetCropArea}
               />
 
               <div style={{ flexGrow: 1, display: 'flex', overflowY: 'hidden' }}>
@@ -2466,30 +2594,34 @@ function App() {
                 <div style={{ position: 'relative', flexGrow: 1, overflow: 'hidden' }} ref={videoContainerRef}>
                   {!isFileOpened && <NoFileLoaded mifiLink={mifiLink} currentCutSeg={currentCutSeg} onClick={openFilesDialog} darkMode={darkMode} keyBindingByAction={keyBindingByAction} />}
 
-                  <div className="no-user-select" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, visibility: !isFileOpened || !hasVideo || bigWaveformEnabled ? 'hidden' : undefined }} onWheel={onTimelineWheel}>
-                    {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-                    <video
-                      className={styles['video']}
-                      tabIndex={-1}
-                      muted={playbackVolume === 0 || compatPlayerEnabled}
-                      ref={videoRef}
-                      style={videoStyle}
-                      src={fileUri}
-                      onPlay={onStartPlaying}
-                      onPause={onStopPlaying}
-                      onAbort={onVideoAbort}
-                      onDurationChange={onDurationChange}
-                      onTimeUpdate={onTimeUpdate}
-                      onError={onVideoError}
-                      onClick={onVideoClick}
-                      onDoubleClick={toggleFullscreenVideo}
-                      onFocusCapture={onVideoFocus}
-                      onSeeked={onSeeked}
-                    >
-                      {renderSubtitles()}
-                    </video>
+                  <div className="no-user-select" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, visibility: !isFileOpened || !hasVideo || bigWaveformEnabled ? 'hidden' : undefined, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onWheel={onTimelineWheel}>
+                    <div style={wrapperStyleWithCrop}>
+                      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                      <video
+                        className={styles['video']}
+                        tabIndex={-1}
+                        muted={playbackVolume === 0 || compatPlayerEnabled}
+                        ref={videoRef}
+                        style={videoStyleWithCrop}
+                        src={fileUri}
+                        onPlay={onStartPlaying}
+                        onPause={onStopPlaying}
+                        onAbort={onVideoAbort}
+                        onDurationChange={onDurationChange}
+                        onTimeUpdate={onTimeUpdate}
+                        onError={onVideoError}
+                        onClick={isCropSelecting ? undefined : onVideoClick}
+                        onDoubleClick={isCropSelecting ? undefined : toggleFullscreenVideo}
+                        onFocusCapture={onVideoFocus}
+                        onSeeked={onSeeked}
+                      >
+                        {renderSubtitles()}
+                      </video>
 
-                    {filePath != null && compatPlayerEnabled && <MediaSourcePlayer rotate={effectiveRotation} filePath={filePath} videoStream={activeVideoStream} audioStreams={activeAudioStreams} masterVideoRef={videoRef} mediaSourceQuality={mediaSourceQuality} />}
+                      {isCropSelecting && <CropSelector onCropComplete={onCropComplete} videoRef={videoRef} />}
+
+                      {filePath != null && compatPlayerEnabled && <MediaSourcePlayer rotate={effectiveRotation} filePath={filePath} videoStream={activeVideoStream} audioStreams={activeAudioStreams} masterVideoRef={videoRef} mediaSourceQuality={mediaSourceQuality} />}
+                    </div>
                   </div>
 
                   {bigWaveformEnabled && <BigWaveform waveforms={waveforms} relevantTime={relevantTime} playing={playing} fileDurationNonZero={fileDurationNonZero} zoom={zoomUnrounded} seekRel={seekRel} darkMode={darkMode} />}
@@ -2563,7 +2695,7 @@ function App() {
                       onInvertSelectedSegments={invertSelectedSegments}
                       onExtractSegmentsFramesAsImages={extractSegmentsFramesAsImages}
                       onExtractSelectedSegmentsFramesAsImages={extractSelectedSegmentsFramesAsImages}
-                      jumpSegStart={jumpSegStart}
+                      jumpSegStart={jumpSegStartWithCrop}
                       jumpSegEnd={jumpSegEnd}
                       onSelectSegmentsByLabel={selectSegmentsByLabel}
                       onSelectSegmentsByExpr={selectSegmentsByExpr}
@@ -2639,7 +2771,7 @@ function App() {
                   currentCutSeg={currentCutSeg}
                   selectedSegments={selectedSegments}
                   setCutStart={setCutStart}
-                  setCutEnd={setCutEnd}
+                  setCutEnd={setCutEndWithCrop}
                   setCurrentSegIndex={setCurrentSegIndex}
                   jumpCutEnd={jumpCutEnd}
                   jumpCutStart={jumpCutStart}

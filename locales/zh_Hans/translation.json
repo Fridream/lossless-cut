@@ -576,6 +576,8 @@
   "Smart cut quality (CRF)": "智能切割质量（CRF）",
   "Smart cut encoding speed": "智能切割编码速度",
   "Force fix concat error": "强制修复合并兼容性错误",
+  "Crop": "选区",
+  "Restore": "恢复",
   "Store in working directory": "存储到工作目录",
   "This experimental feature will re-encode the part of the video from the cutpoint until the next keyframe in order to attempt to make a 100% accurate cut. Only works on some files. I've had success with some h264 files, and only a few h265 files. See more here: {{url}}": "此实验性功能将重新编码从剪切点到下个关键帧的视频部分，尝试进行 100% 精确切割。仅适用于某些文件。我已经成功处理了一些 h264 文件，以及少量 h265 文件。 在此处可查看更多信息：{{url}}",
   "Using external ffmpeg": "使用外部 ffmpeg",

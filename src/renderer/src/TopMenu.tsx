@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { memo, useCallback, useEffect, useRef } from 'react';
 import { IoIosSettings } from 'react-icons/io';
-import { FaFilter, FaList, FaLock, FaMoon, FaSun, FaTimes, FaUnlock } from 'react-icons/fa';
+import { FaCrop, FaFilter, FaList, FaLock, FaMoon, FaSun, FaTimes, FaUndo, FaUnlock } from 'react-icons/fa';
 import { useTranslation } from 'react-i18next';
 import Button from './components/Button';
 
@@ -34,6 +34,9 @@ function TopMenu({
   isCustomFormatSelected,
   clearOutDir,
   toggleDarkMode,
+  isCropActive,
+  onCropClick,
+  onCropResetClick,
 }: {
   filePath: string | undefined,
   fileFormat: string | undefined,
@@ -49,6 +52,9 @@ function TopMenu({
   isCustomFormatSelected: boolean,
   clearOutDir: () => void,
   toggleDarkMode: () => void,
+  isCropActive: boolean,
+  onCropClick: () => void,
+  onCropResetClick: () => void,
 }) {
   const { t } = useTranslation();
   const { customOutDir, changeOutDir, setCustomOutDir, simpleMode, outFormatLocked, setOutFormatLocked, darkMode } = useUserSettings();
@@ -92,6 +98,18 @@ function TopMenu({
     >
       {filePath && (
         <>
+          {isCropActive ? (
+            <Button onClick={withBlur(onCropResetClick)} title={t('Reset crop area')}>
+              <FaUndo style={{ fontSize: '.7em', marginRight: '.5em' }} />
+              {t('Restore')}
+            </Button>
+          ) : (
+            <Button onClick={withBlur(onCropClick)} title={t('Select a crop area on the video')}>
+              <FaCrop style={{ fontSize: '.7em', marginRight: '.5em' }} />
+              {t('Crop')}
+            </Button>
+          )}
+
           <Button onClick={withBlur(() => setStreamsSelectorShown(true))}>
             <FaList style={{ fontSize: '.7em', marginRight: '.5em' }} />
             {t('Tracks')} ({numStreamsToCopy}/{numStreamsTotal})
