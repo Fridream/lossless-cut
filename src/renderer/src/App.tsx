@@ -402,36 +402,41 @@ function App() {
   const jumpTimelineStart = useCallback(() => seekAbs(0), [seekAbs]);
   const jumpTimelineEnd = useCallback(() => seekAbs(fileDuration), [fileDuration, seekAbs]);
 
+  const checkCropSegment = useCallback(() => {
+    if (currentCutSeg && relevantTime > currentCutSeg.start - 0.3 && (!currentCutSeg.end || relevantTime < currentCutSeg.end + 0.3)) return true;
+    showNotification({ title: i18n.t('未知区域'), text: i18n.t('请选择片段或进入片段范围内后再试！'), timer: 3000 });
+    return false;
+  }, [currentCutSeg, relevantTime, showNotification]);
+
   // Crop area: start selecting
   const startCropSelection = useCallback(() => {
     if (!isFileOpened) return;
-    pause();
     setActiveCropArea(undefined);
-    setIsCropSelecting(true);
-    if (currentCutSeg) setCropActiveSegId(currentCutSeg.segId);
-  }, [isFileOpened, pause, currentCutSeg]);
+    if (checkCropSegment()) {
+      setIsCropSelecting(true);
+      setCropActiveSegId(currentCutSeg!.segId);
+    }
+  }, [isFileOpened, currentCutSeg, checkCropSegment]);
 
   // Crop area: complete selection
   const onCropComplete = useCallback((cropArea: CropArea) => {
-    setIsCropSelecting(false);
-    setActiveCropArea(cropArea);
-    // Save crop area to the current segment immediately
-    if (currentCutSeg) {
+    if (checkCropSegment()) {
+      setIsCropSelecting(false);
+      setActiveCropArea(cropArea);
       updateSegAtIndex(currentSegIndexSafe, { cropArea });
-      setCropActiveSegId(currentCutSeg.segId);
+      setCropActiveSegId(currentCutSeg!.segId);
     }
-  }, [currentCutSeg, currentSegIndexSafe, updateSegAtIndex]);
+  }, [currentCutSeg, currentSegIndexSafe, updateSegAtIndex, checkCropSegment]);
 
   // Crop area: reset/restore
   const resetCropArea = useCallback(() => {
-    setActiveCropArea(undefined);
-    setIsCropSelecting(false);
-    setCropActiveSegId(undefined);
-    // Remove crop area from the current segment
-    if (currentCutSeg) {
+    if (checkCropSegment()) {
+      setActiveCropArea(undefined);
+      setIsCropSelecting(false);
+      setCropActiveSegId(undefined);
       updateSegAtIndex(currentSegIndexSafe, { cropArea: undefined });
     }
-  }, [currentCutSeg, currentSegIndexSafe, updateSegAtIndex]);
+  }, [currentSegIndexSafe, updateSegAtIndex, checkCropSegment]);
 
   // When setCutEnd is called, save crop data and reset zoom
   const originalSetCutEnd = setCutEnd;
@@ -448,26 +453,25 @@ function App() {
     const seg = cutSegments[index];
     if (seg != null) {
       seekAbs(seg.start);
-      if (seg.cropArea) {
-        setActiveCropArea(seg.cropArea);
-        setCropActiveSegId(seg.segId);
-      } else {
-        setActiveCropArea(undefined);
-        setCropActiveSegId(undefined);
-      }
+      setCropActiveSegId(seg.segId);
+      setActiveCropArea(seg.cropArea);
     }
   }, [cutSegments, seekAbs]);
 
   // Auto-restore crop when playback leaves the cropped segment
+  const cropAreaRef = useRef({ cropActiveSegId, activeCropArea });
   useEffect(() => {
-    if (!cropActiveSegId || !activeCropArea) return;
-    const seg = cutSegments.find((s) => s.segId === cropActiveSegId);
+    cropAreaRef.current = { cropActiveSegId, activeCropArea };
+  }, [cropActiveSegId, activeCropArea]);
+  useEffect(() => {
+    if (!cropAreaRef.current.cropActiveSegId || !cropAreaRef.current.activeCropArea) return;
+    const seg = cutSegments.find((s) => s.segId === cropAreaRef.current.cropActiveSegId);
     if (!seg || seg.end == null) return;
-    if (relevantTime < seg.start || relevantTime > seg.end) {
+    if (relevantTime < seg.start - 0.3 || relevantTime > seg.end + 0.3) {
       setActiveCropArea(undefined);
       setCropActiveSegId(undefined);
     }
-  }, [relevantTime, cropActiveSegId, activeCropArea, cutSegments]);
+  }, [relevantTime, cutSegments]);
 
   const videoStyleWithCrop = useMemo<CSSProperties>(() => {
     if (!activeCropArea) return videoStyle;

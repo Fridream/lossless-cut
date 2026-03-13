@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { CropArea } from '../types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -21,6 +22,7 @@ interface DisplayRect {
 const MIN_SIZE = 0.02;
 const HANDLE_PX = 8;
 const BORDER_HIT = 12; // hit-area thickness for border edges (px)
+const TOOLBAR_GAP = 8;
 
 // ─── Handle configs ───────────────────────────────────────────────────────────
 
@@ -189,7 +191,6 @@ function CropSelector({
   const [phase, setPhase] = useState<Phase>('idle');
   const [selection, setSelection] = useState<CropArea | null>(null);
   const [displayRect, setDisplayRect] = useState<DisplayRect | null>(null);
-  const [containerHeight, setContainerHeight] = useState(0);
 
   // focus: which element has keyboard focus ('box' | handle key | null)
   const [focused, setFocused] = useState<FocusTarget | null>(null);
@@ -213,11 +214,13 @@ function CropSelector({
 
   // ── Sync displayRect & containerHeight via ResizeObserver ─────────────────
 
+  const [overlayScreenRect, setOverlayScreenRect] = useState<DOMRect | null>(null);
+
   const refreshDisplayRect = useCallback(() => {
     const overlay = overlayRef.current;
     const video = videoRef.current;
     if (!overlay || !video) return;
-    setContainerHeight(overlay.getBoundingClientRect().height);
+    setOverlayScreenRect(overlay.getBoundingClientRect());
     const dr = computeDisplayRect(overlay, video);
     setDisplayRect(dr);
     displayRectRef.current = dr;
@@ -264,8 +267,6 @@ function CropSelector({
       height: selection.h * displayRect.dh,
     };
   }, [selection, displayRect]);
-
-  const toolbarAbove = px ? px.top + px.height + 40 > containerHeight : false;
 
   // ── Keyboard handler ───────────────────────────────────────────────────────
   // Attached as onKeyDown on the focusable selection box div, so the event
@@ -560,7 +561,7 @@ function CropSelector({
                       role="presentation"
                       style={sideStyle}
                       onMouseEnter={() => { showToolbar(); setHoveredBorder(side); }}
-                      onMouseLeave={() => { hideToolbar(); setHoveredBorder(null); }}
+                      onMouseLeave={() => setHoveredBorder(null)}
                       onMouseDown={(e) => startResize(e, correspondingHandle)}
                     />
                   );
@@ -584,7 +585,7 @@ function CropSelector({
                         transition: 'opacity 0.2s',
                       }}
                       onMouseEnter={() => { showToolbar(); setHoveredHandle(h); }}
-                      onMouseLeave={() => { hideToolbar(); setHoveredHandle(null); }}
+                      onMouseLeave={() => setHoveredHandle(null)}
                       onMouseDown={(e) => startResize(e, h)}
                     />
                   );
@@ -593,76 +594,83 @@ function CropSelector({
             )}
           </div>
 
-          {/* ── Confirm / Cancel toolbar ───────────────────────────────────── */}
-          {phase === 'selected' && (
-            <div
-              role="presentation"
-              style={{
-                position: 'absolute',
-                left: px.left + px.width,
-                transform: 'translateX(-100%)',
-                top: toolbarAbove ? px.top - 40 : px.top + px.height + 8,
-                display: 'flex',
-                gap: 6,
-                zIndex: 12,
-                pointerEvents: 'auto',
-              }}
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              <button
-                type="button"
-                onClick={handleConfirm}
+          {/* ── Confirm / Cancel toolbar (portal → escapes overflow:hidden) ── */}
+          {phase === 'selected' && px && (() => {
+            const overlayRect = overlayScreenRect;
+            if (!overlayRect) return null;
+            const screenRight = overlayRect.left + px.left + px.width;
+            const screenBottom = overlayRect.top + px.top + px.height + TOOLBAR_GAP;
+            return createPortal(
+              <div
+                role="presentation"
                 style={{
+                  position: 'fixed',
+                  left: screenRight,
+                  transform: 'translateX(-100%)',
+                  top: screenBottom,
                   display: 'flex',
-                  alignItems: 'center',
-                  gap: 5,
-                  padding: '5px 14px',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: '#fff',
-                  background: 'rgba(37, 99, 235, 0.75)',
-                  border: '1px solid rgba(99, 155, 255, 0.5)',
-                  borderRadius: 6,
-                  cursor: 'pointer',
-                  backdropFilter: 'blur(8px)',
-                  WebkitBackdropFilter: 'blur(8px)',
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
-                  whiteSpace: 'nowrap',
-                  letterSpacing: '0.3px',
-                  width: 64,
-                  justifyContent: 'center',
+                  gap: 6,
+                  zIndex: 9999,
+                  pointerEvents: 'auto',
                 }}
+                onMouseDown={(e) => e.stopPropagation()}
               >
-                ✓ 确认
-              </button>
-              <button
-                type="button"
-                onClick={handleCancel}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 5,
-                  padding: '5px 14px',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: 'rgba(255,255,255,0.85)',
-                  background: 'rgba(255,255,255,0.12)',
-                  border: '1px solid rgba(255,255,255,0.25)',
-                  borderRadius: 6,
-                  cursor: 'pointer',
-                  backdropFilter: 'blur(8px)',
-                  WebkitBackdropFilter: 'blur(8px)',
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
-                  whiteSpace: 'nowrap',
-                  letterSpacing: '0.3px',
-                  width: 64,
-                  justifyContent: 'center',
-                }}
-              >
-                ✕ 取消
-              </button>
-            </div>
-          )}
+                <button
+                  type="button"
+                  onClick={handleConfirm}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    padding: '5px 14px',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: '#fff',
+                    background: 'rgba(37, 99, 235, 0.75)',
+                    border: '1px solid rgba(99, 155, 255, 0.5)',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    backdropFilter: 'blur(8px)',
+                    WebkitBackdropFilter: 'blur(8px)',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+                    whiteSpace: 'nowrap',
+                    letterSpacing: '0.3px',
+                    width: 64,
+                    justifyContent: 'center',
+                  }}
+                >
+                  ✓ 确认
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    padding: '5px 14px',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: 'rgba(255,255,255,0.85)',
+                    background: 'rgba(255,255,255,0.12)',
+                    border: '1px solid rgba(255,255,255,0.25)',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    backdropFilter: 'blur(8px)',
+                    WebkitBackdropFilter: 'blur(8px)',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+                    whiteSpace: 'nowrap',
+                    letterSpacing: '0.3px',
+                    width: 64,
+                    justifyContent: 'center',
+                  }}
+                >
+                  ✕ 取消
+                </button>
+              </div>,
+              document.body,
+            );
+          })()}
         </>
       )}
     </div>
