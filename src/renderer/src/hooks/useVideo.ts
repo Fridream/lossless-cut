@@ -69,7 +69,7 @@ export default ({ filePath }: { filePath: string | undefined }) => {
     if (filePath == null) return;
     const video = videoRef.current;
     if (video == null || val == null || Number.isNaN(val)) return;
-    let outVal = val;
+    let outVal = val + 0.0005; // 缓解计算误差
     if (outVal < 0) outVal = 0;
     if (outVal > video.duration) outVal = video.duration;
 
