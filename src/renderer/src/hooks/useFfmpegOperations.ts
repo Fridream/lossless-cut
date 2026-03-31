@@ -5,7 +5,7 @@ import pMap from 'p-map';
 import invariant from 'tiny-invariant';
 
 import { getSuffixedOutPath, transferTimestamps, getOutFileExtension, getOutDir, deleteDispositionValue, getHtml5ifiedPath, unlinkWithRetry, getFrameDuration, isMac, html5ifiedPrefix, html5dummySuffix } from '../util';
-import { isCuttingStart, isCuttingEnd, runFfmpegWithProgress, getFfCommandLine, getDuration, createChaptersFromSegments, readFileFfprobeMeta, readFramesAroundTime, readKeyframesAroundTime, getExperimentalArgs, getVideoTimescaleArgs, logStdoutStderr, runFfmpegConcat, RefuseOverwriteError, runFfmpeg } from '../ffmpeg';
+import { isCuttingStart, isCuttingEnd, runFfmpegWithProgress, getFfCommandLine, getDuration, createChaptersFromSegments, readFileFfprobeMeta, readFramesAroundTime, getExperimentalArgs, getVideoTimescaleArgs, logStdoutStderr, runFfmpegConcat, RefuseOverwriteError, runFfmpeg } from '../ffmpeg';
 import { getMapStreamsArgs, getStreamIdsToCopy } from '../util/streams';
 import { needsSmartCut, getCodecParams } from '../smartcut';
 import { getGuaranteedSegments, isDurationValid } from '../segments';
@@ -643,6 +643,8 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
       ...rotationArgs,
 
       ...inputFilesArgs,
+      '-copypriorss', '0', // 防止ffmpeg吸附到更前面的关键帧
+
       ...getChaptersInputArgs(chaptersPath),
 
       ...avoidNegativeTsArgs,
@@ -973,16 +975,10 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
         ? getSuffixedOutPath({ customOutDir, filePath, nameSuffix: `smartcut-segment-copy-${i}${ext}` })
         : finalOutPath;
 
-      // 因为ffmpeg固有特性，copy点延后到下一关键帧的一半或者0.5s取最小值
-      const copyCutFrom = losslessCutFrom ?? exactCutFrom;
-      const keyframes = await readKeyframesAroundTime({ filePath, streamIndex: videoStream.index, aroundTime: copyCutFrom + 1, window: 2 });
-      const nextKeyframe = keyframes.find((kf) => kf.time > copyCutFrom);
-      const offset = nextKeyframe ? Math.min((nextKeyframe.time - copyCutFrom) / 2, 0.5) : 0.5;
-      console.log('Calculated dynamic offset:', { nextKeyframe: nextKeyframe?.time, offset });
-
       // for smart cut we need to use keyframe cut here, and no avoid_negative_ts
+      const copyCutFrom = losslessCutFrom ?? exactCutFrom;
       await losslessCutSingle({
-        cutFrom: copyCutFrom + offset, cutTo: losslessCutTo, chaptersPath, outPath: losslessPartOutPath, copyFileStreams: copyFileStreamsFiltered, keyframeCut: true, avoidNegativeTs: undefined, fileDuration, rotation, allFilesMeta, outFormat, shortestFlag, ffmpegExperimental, preserveMetadata, preserveMovData, preserveChapters, movFastStart, customTagsByFile, paramsByStreamId, videoTimebase, onProgress: onCopyProgress,
+        cutFrom: copyCutFrom, cutTo: losslessCutTo, chaptersPath, outPath: losslessPartOutPath, copyFileStreams: copyFileStreamsFiltered, keyframeCut: true, avoidNegativeTs: undefined, fileDuration, rotation, allFilesMeta, outFormat, shortestFlag, ffmpegExperimental, preserveMetadata, preserveMovData, preserveChapters, movFastStart, customTagsByFile, paramsByStreamId, videoTimebase, onProgress: onCopyProgress,
       });
 
       // We don't need to concat, just return the single cut file (we may need smart cut in other segments though)
