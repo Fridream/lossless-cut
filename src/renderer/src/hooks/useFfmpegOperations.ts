@@ -77,12 +77,11 @@ export async function maybeMkDeepOutDir({ outputDir, fileOutPath }: { outputDir:
 }
 
 
-function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart, isEncoding, lossyMode, enableOverwriteOutput, outputPlaybackRate, cutFromAdjustmentFrames, cutToAdjustmentFrames, appendLastCommandsLog, appendFfmpegCommandLog, smartCutCrf, smartCutPreset, forceFixConcat }: {
+function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart, lossyMode, enableOverwriteOutput, outputPlaybackRate, cutFromAdjustmentFrames, cutToAdjustmentFrames, appendLastCommandsLog, appendFfmpegCommandLog, smartCutCrf, smartCutPreset, forceFixConcat }: {
   filePath: string | undefined,
   treatInputFileModifiedTimeAsStart: boolean,
   treatOutputFileModifiedTimeAsStart: boolean | null | undefined,
   enableOverwriteOutput: boolean,
-  isEncoding: boolean,
   lossyMode: LossyMode | undefined,
   outputPlaybackRate: number,
   cutFromAdjustmentFrames: number,
@@ -828,7 +827,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
   }, [appendFfmpegCommandLog, filePath, smartCutCrf, smartCutPreset]);
 
   const cutMultiple = useCallback(async ({
-    outputDir, customOutDir, segments: segmentsIn, cutFileNames, fileDuration, rotation, onProgress: onTotalProgress, keyframeCut, copyFileStreams, allFilesMeta, outFormat, shortestFlag, ffmpegExperimental, preserveMetadata, preserveMetadataOnMerge, preserveMovData, preserveChapters, movFastStart, avoidNegativeTs, customTagsByFile, paramsByStreamId, chapters,
+    outputDir, customOutDir, segments: segmentsIn, cutFileNames, fileDuration, rotation, onProgress: onTotalProgress, copyFileStreams, allFilesMeta, outFormat, shortestFlag, ffmpegExperimental, preserveMetadata, preserveMetadataOnMerge, preserveMovData, preserveChapters, movFastStart, customTagsByFile, paramsByStreamId, chapters,
   }: {
     outputDir: string,
     customOutDir: string | undefined,
@@ -837,7 +836,6 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
     fileDuration: number | undefined,
     rotation: number | undefined,
     onProgress: (p: number) => void,
-    keyframeCut: boolean,
     copyFileStreams: CopyfileStreams,
     allFilesMeta: AllFilesMeta,
     outFormat: string | undefined,
@@ -848,7 +846,6 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
     preserveMetadataOnMerge: boolean,
     preserveChapters: boolean,
     movFastStart: boolean,
-    avoidNegativeTs: AvoidNegativeTs | undefined,
     customTagsByFile: CustomTagsByFile,
     paramsByStreamId: ParamsByStreamId,
     chapters: Chapter[] | undefined,
@@ -876,15 +873,6 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
       if (await shouldSkipExistingFile(finalOutPath)) return { path: finalOutPath, created: false };
 
       await maybeMkDeepOutDir({ outputDir, fileOutPath: finalOutPath });
-
-      if (!isEncoding && !cropArea) {
-        // simple lossless cut
-        invariant(outFormat != null);
-        await losslessCutSingle({
-          cutFrom: desiredCutFrom, cutTo, chaptersPath, outPath: finalOutPath, copyFileStreams, keyframeCut, avoidNegativeTs, fileDuration, rotation, allFilesMeta, outFormat, shortestFlag, ffmpegExperimental, preserveMetadata, preserveMovData, preserveChapters, movFastStart, customTagsByFile, paramsByStreamId, onProgress: (progress) => onSingleProgress(i, progress),
-        });
-        return { path: finalOutPath, created: true };
-      }
 
       // we are probably encoding (smart cut or lossy mode)
       invariant(filePath != null);
@@ -914,7 +902,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
       const exactCutFrom = minNearFrame!.time;
       frames = await readFramesAroundTime({ filePath, streamIndex: videoStream.index, aroundTime: cutTo, window: 3 }); minNearTime = 3; minNearFrame = undefined;
       for (const frame of frames) if (Math.abs(frame.time - cutTo) < minNearTime) { minNearTime = Math.abs(frame.time - cutTo); minNearFrame = frame; }
-      const exactCutTo = minNearFrame!.time;
+      const exactCutTo = isCuttingEnd(cutTo, fileDuration) ? minNearFrame!.time : fileDuration!;
 
       // If segment has a crop area, always re-encode with crop filter
       if (cropArea) {
@@ -953,7 +941,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
         return cutEncodeWholePart();
       }
 
-      const { losslessCutFrom, losslessCutTo, losslessCutToPTS } = await needsSmartCut({ path: filePath, exactCutFrom, exactCutTo, videoStream });
+      const { losslessCutFrom, losslessCutTo, losslessCutToPTS } = await needsSmartCut({ path: filePath, exactCutFrom, exactCutTo, fileDuration, videoStream });
       console.log('Smart cut on video stream', videoStream.index);
 
       if (losslessCutTo == null) {
@@ -1024,7 +1012,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
     } finally {
       if (chaptersPath) await tryDeleteFiles([chaptersPath]);
     }
-  }, [shouldSkipExistingFile, isEncoding, filePath, lossyMode, losslessCutSingle, cutEncodeSmartPart, cutEncodeCropSegment, concatFiles, concatFilesTs, forceFixConcat]);
+  }, [shouldSkipExistingFile, filePath, lossyMode, losslessCutSingle, cutEncodeSmartPart, cutEncodeCropSegment, concatFiles, concatFilesTs, forceFixConcat]);
 
   const concatCutSegments = useCallback(async ({ customOutDir, outFormat, segmentPaths, ffmpegExperimental, onProgress, preserveMovData, movFastStart, chapterNames, preserveMetadataOnMerge, mergedOutFilePath }: {
     customOutDir: string | undefined,

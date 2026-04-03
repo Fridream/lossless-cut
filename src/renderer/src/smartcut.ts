@@ -7,10 +7,11 @@ import { readFileSize } from './util';
 
 const mapVideoCodec = (codec: string) => ({ av1: 'libsvtav1' }[codec] ?? codec);
 
-export async function needsSmartCut({ path, exactCutFrom, exactCutTo, videoStream }: {
+export async function needsSmartCut({ path, exactCutFrom, exactCutTo, fileDuration, videoStream }: {
   path: string,
   exactCutFrom: number,
   exactCutTo: number,
+  fileDuration: number | undefined,
   videoStream: Pick<FFprobeStream, 'index'>,
 }) {
   let losslessCutFrom; // 有值时表示需要头smart cut，作为头编码的尾点，中/尾复制的起点
@@ -31,15 +32,16 @@ export async function needsSmartCut({ path, exactCutFrom, exactCutTo, videoStrea
     losslessCutFrom = keyFrame.time;
   }
 
+  if (fileDuration === exactCutTo) return { losslessCutFrom, losslessCutTo: fileDuration, losslessCutToPTS };
   // 在附近3s找安全点，使得最后得包含的那一帧DTS时间小于最前不应该包含的那一帧DTS时间，以此作为DTS实际切割尾点
-  // 找不到安全点时直接整段重编码，正常情况下5帧内必有安全点
+  // 找不到安全点时直接整段重编码，正常情况下10帧内必有安全点
   const copyHead = losslessCutFrom ?? exactCutFrom; frames = await readFrames(exactCutTo, 3); selectedFrame = undefined;
   for (const frame of frames) if (frame.time === exactCutTo) { selectedFrame = frame; break; }
   for (const frame of frames.filter((f) => f.time <= selectedFrame!.time && f.time > copyHead).sort((a, b) => b.time - a.time)) {
-    const maxDtsBeforeFrame = frames.filter((f) => f.time <= frame.time).reduce((max, f) => (f.DTSTime > max.DTSTime ? f : max));
-    const afterFrames = frames.filter((f) => f.time > frame.time);
-    const minDtsAfterFrame = afterFrames.length > 0 ? afterFrames.reduce((min, f) => (f.DTSTime < min.DTSTime ? f : min)) : maxDtsBeforeFrame; // 可能最后一帧
-    if (maxDtsBeforeFrame.DTSTime <= minDtsAfterFrame.DTSTime) { losslessCutTo = maxDtsBeforeFrame.DTSTime; if (frame !== selectedFrame) losslessCutToPTS = frame.time; break; }
+    const minDtsAfterFrame = frames.filter((f) => f.time >= frame.time).reduce((min, f) => (f.DTSTime < min.DTSTime ? f : min));
+    const maxDtsBeforeFrame = frames.filter((f) => f.time < frame.time).reduce((max, f) => (f.DTSTime > max.DTSTime ? f : max));
+    const minDtsAfter = minDtsAfterFrame.DTSTime; const maxDtsBefore = maxDtsBeforeFrame.DTSTime;
+    if (maxDtsBefore < minDtsAfter) { losslessCutTo = minDtsAfter; if (frame !== selectedFrame) losslessCutToPTS = frame.time; break; }
   }
   return { losslessCutFrom, losslessCutTo, losslessCutToPTS };
 }
