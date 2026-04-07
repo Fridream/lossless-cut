@@ -1,7 +1,8 @@
 import type { ReactEventHandler } from 'react';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChromiumHTMLVideoElement, PlaybackMode } from '../types';
 import { showPlaybackFailedMessage } from '../swal';
+import { ffmpegExtractWindow } from '../util/constants';
 
 export default ({ filePath }: { filePath: string | undefined }) => {
   const [commandedTime, setCommandedTimeRaw] = useState(0);
@@ -59,11 +60,24 @@ export default ({ filePath }: { filePath: string | undefined }) => {
   }, []);
 
   const commandedTimeRef = useRef(commandedTime);
+  const playingRefreshIntervalRef = useRef<ReturnType<typeof setInterval> | undefined>(); // 用于自动触发附近帧读取
+
+  const setCommandedTimeIn = useCallback((t: number) => {
+    commandedTimeRef.current = t;
+    setCommandedTimeRaw(t);
+  }, []);
+
+  const resetPlayingRefreshIntervalRef = useCallback(({ create, clear }: { create?: boolean, clear?: boolean } = {}) => {
+    const renew = create || (!clear && !!playingRefreshIntervalRef.current); clearInterval(playingRefreshIntervalRef.current); playingRefreshIntervalRef.current = undefined;
+    if (renew) playingRefreshIntervalRef.current = setInterval(() => videoRef.current && setCommandedTimeIn(videoRef.current.currentTime), (ffmpegExtractWindow * 1000) / 4);
+  }, [setCommandedTimeIn]);
+  useEffect(() => () => resetPlayingRefreshIntervalRef({ clear: true }), [filePath, resetPlayingRefreshIntervalRef]);
 
   const setCommandedTime = useCallback((t: number) => {
     commandedTimeRef.current = t;
     setCommandedTimeRaw(t);
-  }, []);
+    resetPlayingRefreshIntervalRef();
+  }, [resetPlayingRefreshIntervalRef]);
 
   const seekAbs = useCallback((val: number | undefined) => {
     if (filePath == null) return;
@@ -89,10 +103,11 @@ export default ({ filePath }: { filePath: string | undefined }) => {
   const onPlayingChange = useCallback((val: boolean) => {
     playingRef.current = val;
     setPlaying(val);
+    resetPlayingRefreshIntervalRef({ create: val, clear: !val });
     if (!val && videoRef.current) {
-      setCommandedTime(videoRef.current.currentTime);
+      setCommandedTimeIn(videoRef.current.currentTime);
     }
-  }, [setCommandedTime]);
+  }, [setCommandedTimeIn, resetPlayingRefreshIntervalRef]);
 
   const onStopPlaying = useCallback(() => {
     onPlayingChange(false);

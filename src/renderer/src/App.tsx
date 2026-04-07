@@ -673,10 +673,11 @@ function App() {
   const shouldShowKeyframes = keyframesEnabled && hasVideo && calcShouldShowKeyframes(zoomedDuration);
   const shouldShowWaveform = calcShouldShowWaveform(zoomedDuration) || overviewWaveform != null;
 
-  const areWeCutting = useMemo(() => segmentsToExport.some(({ start, end }) => isCuttingStart(start) || isCuttingEnd(end, fileDuration)), [fileDuration, segmentsToExport]);
-  const [exportInfo, setExportInfo] = useState({ copyCount: 1, encodeCount: 0, concatCount: 0 });
+  const areWeCutting = useMemo(() => segmentsToExport.some(({ start, end, cropArea }) => isCuttingStart(start) || isCuttingEnd(end, fileDuration) || cropArea), [fileDuration, segmentsToExport]);
+  const [exportInfo, setExportInfo] = useState({ copyCount: 0, encodeCount: 0, concatCount: 0 });
   useEffect(() => {
-    if (!filePath || !mainVideoStream) { setExportInfo({ copyCount: 1, encodeCount: 0, concatCount: 0 }); return; }
+    if (!filePath || !mainVideoStream) { setExportInfo({ copyCount: 0, encodeCount: 0, concatCount: 0 }); return; }
+    if (segmentsToExport.length === 0) { setExportInfo({ copyCount: 1, encodeCount: 0, concatCount: 0 }); return; }
     (async () => {
       let copyCount = 0; let encodeCount = 0; let concatCount = 0;
       for (const segment of segmentsToExport) {
@@ -1619,10 +1620,10 @@ function App() {
   const seekClosestKeyframe = useCallback((direction: number) => {
     const now = performance.now();
     // 如果两次查找时间间隔小于1s，则使用用户上次转跳的时间作为基准而不是使用实际播放时间
-    const seekTimeBase = (now - lastKeyframeSeekTimeRef.current < 1000) ? commandedTimeRef.current : getRelevantTime();
-    lastKeyframeSeekTimeRef.current = now;
+    const seekTimeBase = (now - lastKeyframeSeekTimeRef.current < 1000) && direction < 0 ? commandedTimeRef.current : getRelevantTime();
     const time = findNearestKeyFrameTime({ time: seekTimeBase, direction });
     if (time == null) return;
+    lastKeyframeSeekTimeRef.current = now;
     seekAbs(time);
   }, [findNearestKeyFrameTime, getRelevantTime, seekAbs, commandedTimeRef]);
 
