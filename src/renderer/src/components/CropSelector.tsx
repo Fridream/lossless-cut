@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { CropArea } from '../types';
 
@@ -87,83 +87,42 @@ function getHandleStyle(h: ResizeHandle, isFocused: boolean, isHinted: boolean):
   };
 }
 
-// ─── Keyboard delta ───────────────────────────────────────────────────────────
-//
-// Returns { dx, dy, dw, dh } in relative coords for a given focused target + key.
-// stepX / stepY = 1px expressed as a fraction of the display rect dimension.
+// ─── Helper: compute new selection ────────────────────────────────────────────
 
-function getKeyboardDelta(
-  focused: FocusTarget,
-  key: string,
-  stepX: number,
-  stepY: number,
-): { dx: number; dy: number; dw: number; dh: number } | null {
-  const d = { dx: 0, dy: 0, dw: 0, dh: 0 };
-
-  // ── Whole-box move ──────────────────────────────────────────────────────────
-  if (focused === 'box') {
-    switch (key) {
-      case 'ArrowLeft': { d.dx = -stepX; break; }
-      case 'ArrowRight': { d.dx = stepX; break; }
-      case 'ArrowUp': { d.dy = -stepY; break; }
-      case 'ArrowDown': { d.dy = stepY; break; }
-      default: { return null; }
+function calcNewSelection(focused: FocusTarget, original: CropArea, dx: number, dy: number) {
+  let { x, y, w, h } = original;
+  if (focused === 'box') { // MOVE
+    x = Math.max(0, Math.min(1 - w, x + dx));
+    y = Math.max(0, Math.min(1 - h, y + dy));
+  } else { // RESIZE
+    if (focused === 'tl' || focused === 'ml' || focused === 'bl') {
+      x = Math.max(0, Math.min(original.x + original.w - MIN_SIZE, original.x + dx));
+      w = original.x + original.w - x;
     }
-    return d;
-  }
-
-  // ── Handle resize ───────────────────────────────────────────────────────────
-  // Determine which edges this handle controls
-  const isLeft = focused === 'tl' || focused === 'ml' || focused === 'bl';
-  const isRight = focused === 'tr' || focused === 'mr' || focused === 'br';
-  const isTop = focused === 'tl' || focused === 'tc' || focused === 'tr';
-  const isBottom = focused === 'bl' || focused === 'bc' || focused === 'br';
-
-  let handled = false;
-
-  switch (key) {
-    case 'ArrowLeft': {
-      if (isLeft) { d.dx = -stepX; d.dw = stepX; handled = true; } // pull left edge left
-      if (isRight) { d.dw = -stepX; handled = true; } // pull right edge left
-      break;
+    if (focused === 'tr' || focused === 'mr' || focused === 'br') {
+      w = Math.max(MIN_SIZE, Math.min(1 - original.x, original.w + dx));
     }
-    case 'ArrowRight': {
-      if (isLeft) { d.dx = stepX; d.dw = -stepX; handled = true; } // push left edge right
-      if (isRight) { d.dw = stepX; handled = true; } // push right edge right
-      break;
+    if (focused === 'tl' || focused === 'tc' || focused === 'tr') {
+      y = Math.max(0, Math.min(original.y + original.h - MIN_SIZE, original.y + dy));
+      h = original.y + original.h - y;
     }
-    case 'ArrowUp': {
-      if (isTop) { d.dy = -stepY; d.dh = stepY; handled = true; } // pull top edge up
-      if (isBottom) { d.dh = -stepY; handled = true; } // pull bottom edge up
-      break;
-    }
-    case 'ArrowDown': {
-      if (isTop) { d.dy = stepY; d.dh = -stepY; handled = true; } // push top edge down
-      if (isBottom) { d.dh = stepY; handled = true; } // push bottom edge down
-      break;
+    if (focused === 'bl' || focused === 'bc' || focused === 'br') {
+      h = Math.max(MIN_SIZE, Math.min(1 - original.y, original.h + dy));
     }
   }
-
-  return handled ? d : null;
+  return { x, y, w, h };
 }
 
 // ─── Helper: compute display rect from DOM ────────────────────────────────────
 
-function computeDisplayRect(
-  overlay: HTMLDivElement,
-  video: HTMLVideoElement,
-): DisplayRect | null {
-  const cr = overlay.getBoundingClientRect();
+function calcDisplayRect(cr: DOMRect, video: HTMLVideoElement) {
   const { videoWidth: vw, videoHeight: vh } = video;
   if (!vw || !vh) return null;
 
   const ca = cr.width / cr.height;
   const va = vw / vh;
-  let dw: number;
-  let dh: number;
-  let ox: number;
-  let oy: number;
 
+  let dw; let dh; let ox; let oy;
   if (ca > va) {
     dh = cr.height;
     dw = dh * va;
@@ -172,25 +131,25 @@ function computeDisplayRect(
   } else {
     dw = cr.width;
     dh = dw / va;
-    ox = 0;
     oy = (cr.height - dh) / 2;
+    ox = 0;
   }
-
   return { dw, dh, ox, oy };
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-function CropSelector({
-  onCropComplete,
-  videoRef,
-}: {
-  onCropComplete: (cropArea: CropArea) => void;
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-}) {
-  const [phase, setPhase] = useState<Phase>('idle');
-  const [selection, setSelection] = useState<CropArea | null>(null);
+export interface CropSelectorHandle { handleKeyDown: (e: KeyboardEvent) => boolean; }
+
+function CropSelector({ onCropComplete, videoRef, initialCrop }: {
+  onCropComplete: (cropArea: CropArea | null) => void;
+  videoRef: React.RefObject<HTMLVideoElement>;
+  initialCrop: CropArea | null;
+}, ref: React.Ref<CropSelectorHandle>) {
+  const [phase, setPhase] = useState<Phase>(initialCrop ? 'selected' : 'idle');
+  const [selection, setSelection] = useState<CropArea | null>(initialCrop);
   const [displayRect, setDisplayRect] = useState<DisplayRect | null>(null);
+  const [overlayScreenRect, setOverlayScreenRect] = useState<DOMRect | null>(null);
 
   // focus: which element has keyboard focus ('box' | handle key | null)
   const [focused, setFocused] = useState<FocusTarget | null>(null);
@@ -200,13 +159,11 @@ function CropSelector({
   const [hoveredHandle, setHoveredHandle] = useState<ResizeHandle | null>(null);
   // toolbar visibility: shown when mouse is inside the box, auto-hides 3s after leaving
   const [toolbarVisible, setToolbarVisible] = useState(false);
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const overlayRef = useRef<HTMLDivElement>(null);
-  const selectionBoxRef = useRef<HTMLDivElement>(null);
-  // Refs for values needed inside document-level event listeners
   const displayRectRef = useRef<DisplayRect | null>(null);
   const focusedRef = useRef<FocusTarget | null>(null);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Keep refs in sync with state
   useEffect(() => { displayRectRef.current = displayRect; }, [displayRect]);
@@ -214,33 +171,22 @@ function CropSelector({
 
   // ── Sync displayRect & containerHeight via ResizeObserver ─────────────────
 
-  const [overlayScreenRect, setOverlayScreenRect] = useState<DOMRect | null>(null);
-
   const refreshDisplayRect = useCallback(() => {
-    const overlay = overlayRef.current;
     const video = videoRef.current;
+    const overlay = overlayRef.current;
     if (!overlay || !video) return;
-    setOverlayScreenRect(overlay.getBoundingClientRect());
-    const dr = computeDisplayRect(overlay, video);
-    setDisplayRect(dr);
-    displayRectRef.current = dr;
+    const overlayRect = overlay.getBoundingClientRect();
+    setOverlayScreenRect(overlayRect);
+    setDisplayRect(calcDisplayRect(overlayRect, video));
   }, [videoRef]);
 
   useEffect(() => {
     const el = overlayRef.current;
-    if (!el) return undefined;
     refreshDisplayRect();
     const ro = new ResizeObserver(() => refreshDisplayRect());
-    ro.observe(el);
+    ro.observe(el!);
     return () => ro.disconnect();
   }, [refreshDisplayRect]);
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return undefined;
-    video.addEventListener('loadedmetadata', refreshDisplayRect);
-    return () => video.removeEventListener('loadedmetadata', refreshDisplayRect);
-  }, [videoRef, refreshDisplayRect]);
 
   // ── toRel ──────────────────────────────────────────────────────────────────
   // Uses a ref so it never goes stale inside document-level handlers.
@@ -251,8 +197,8 @@ function CropSelector({
     if (!overlay || !dr) return null;
     const cr = overlay.getBoundingClientRect();
     return {
-      x: Math.max(0, Math.min(1, (clientX - cr.left - dr.ox) / dr.dw)),
-      y: Math.max(0, Math.min(1, (clientY - cr.top - dr.oy) / dr.dh)),
+      x: (clientX - cr.left - dr.ox) / dr.dw,
+      y: (clientY - cr.top - dr.oy) / dr.dh,
     };
   }, []);
 
@@ -268,43 +214,7 @@ function CropSelector({
     };
   }, [selection, displayRect]);
 
-  // ── Keyboard handler ───────────────────────────────────────────────────────
-  // Attached as onKeyDown on the focusable selection box div, so the event
-  // never reaches the video player — no capture-phase hacks needed.
-
-  const onSelectionKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setFocused(null);
-        return;
-      }
-
-      const currentFocused = focusedRef.current;
-      if (!currentFocused) return;
-      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
-
-      const dr = displayRectRef.current;
-      if (!dr) return;
-      e.preventDefault();
-
-      const stepX = 1 / dr.dw;
-      const stepY = 1 / dr.dh;
-      const delta = getKeyboardDelta(currentFocused, e.key, stepX, stepY);
-      if (!delta) return;
-
-      setSelection((prev) => {
-        if (!prev) return prev;
-        const w = Math.max(MIN_SIZE, Math.min(1, prev.w + delta.dw));
-        const h = Math.max(MIN_SIZE, Math.min(1, prev.h + delta.dh));
-        const x = Math.max(0, Math.min(1 - w, prev.x + delta.dx));
-        const y = Math.max(0, Math.min(1 - h, prev.y + delta.dy));
-        return { x, y, w, h };
-      });
-    },
-    [],
-  );
-
-  // ── Draw (overlay mousedown) ───────────────────────────────────────────────
+  // ── Tool bar: auto hide tool bar ───────────────────────────────────────────
 
   const showToolbar = useCallback(() => {
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
@@ -317,170 +227,140 @@ function CropSelector({
     else hideTimerRef.current = setTimeout(() => setToolbarVisible(false), 1500);
   }, []);
 
-  const onOverlayMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      if (phase === 'selected') {
-        // Clicked on the overlay outside the selection box → clear focus
-        setFocused(null);
-        return;
-      }
+  // ── Draw (overlay mousedown) ───────────────────────────────────────────────
 
-      e.preventDefault();
-      const startPos = toRel(e.clientX, e.clientY);
-      if (!startPos) return;
+  const onOverlayMouseDown = useCallback((e: React.MouseEvent) => {
+    // Clicked on the overlay outside the selection box → clear focus
+    if (phase === 'selected') { setFocused(null); return; }
 
-      setPhase('drawing');
-      setFocused(null);
-      setSelection({ x: startPos.x, y: startPos.y, w: 0, h: 0 });
+    e.preventDefault(); e.stopPropagation();
+    const startPos = toRel(e.clientX, e.clientY);
+    if (!startPos) return;
 
-      const onDocMove = (ev: MouseEvent) => {
-        const cur = toRel(ev.clientX, ev.clientY);
-        if (!cur) return;
-        setSelection({
-          x: Math.min(startPos.x, cur.x),
-          y: Math.min(startPos.y, cur.y),
-          w: Math.abs(cur.x - startPos.x),
-          h: Math.abs(cur.y - startPos.y),
-        });
-      };
+    startPos.x = Math.max(0, Math.min(1, startPos.x));
+    startPos.y = Math.max(0, Math.min(1, startPos.y));
 
-      const onDocUp = (ev: MouseEvent) => {
-        document.removeEventListener('mousemove', onDocMove);
-        document.removeEventListener('mouseup', onDocUp);
+    setPhase('drawing');
+    setSelection({ x: startPos.x, y: startPos.y, w: 0, h: 0 });
 
-        const cur = toRel(ev.clientX, ev.clientY);
-        if (!cur) { setPhase('idle'); setSelection(null); return; }
+    const onDocMove = (ev: MouseEvent) => {
+      const cur = toRel(ev.clientX, ev.clientY);
+      if (!cur) return;
+      cur.x = Math.max(0, Math.min(1, cur.x));
+      cur.y = Math.max(0, Math.min(1, cur.y));
+      setSelection({
+        x: Math.min(startPos.x, cur.x),
+        y: Math.min(startPos.y, cur.y),
+        w: Math.abs(cur.x - startPos.x),
+        h: Math.abs(cur.y - startPos.y),
+      });
+    };
 
-        const w = Math.abs(cur.x - startPos.x);
-        const h = Math.abs(cur.y - startPos.y);
-        if (w < MIN_SIZE || h < MIN_SIZE) { setPhase('idle'); setSelection(null); return; }
+    const onDocUp = (ev: MouseEvent) => {
+      document.removeEventListener('mousemove', onDocMove);
+      document.removeEventListener('mouseup', onDocUp);
 
-        setSelection({ x: Math.min(startPos.x, cur.x), y: Math.min(startPos.y, cur.y), w, h });
-        setPhase('selected');
-        // do NOT auto-focus after drawing
-        setFocused(null);
-        showToolbar();
-      };
+      const cur = toRel(ev.clientX, ev.clientY);
+      if (!cur) { setPhase('idle'); setSelection(null); return; }
+      cur.x = Math.max(0, Math.min(1, cur.x));
+      cur.y = Math.max(0, Math.min(1, cur.y));
 
-      document.addEventListener('mousemove', onDocMove);
-      document.addEventListener('mouseup', onDocUp);
-    },
-    [phase, toRel, showToolbar],
-  );
+      const w = Math.abs(cur.x - startPos.x);
+      const h = Math.abs(cur.y - startPos.y);
+      if (w < MIN_SIZE || h < MIN_SIZE) { setPhase('idle'); setSelection(null); return; }
+
+      setSelection({ x: Math.min(startPos.x, cur.x), y: Math.min(startPos.y, cur.y), w, h });
+      setPhase('selected');
+      showToolbar();
+    };
+
+    document.addEventListener('mousemove', onDocMove);
+    document.addEventListener('mouseup', onDocUp);
+  }, [phase, toRel, showToolbar]);
 
   // ── Move (click/drag box interior) ─────────────────────────────────────────
 
-  const startMove = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (!selection) return;
+  const startMove = useCallback((e: React.MouseEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    if (!selection) return;
+    setFocused('box');
 
-      // clicking box interior focuses the box
-      setFocused('box');
-      selectionBoxRef.current?.focus();
+    const startPos = toRel(e.clientX, e.clientY);
+    if (!startPos) return;
+    const s = { ...selection };
 
-      const startPos = toRel(e.clientX, e.clientY);
-      if (!startPos) return;
-      const startSel = { ...selection };
+    const onMove = (ev: MouseEvent) => {
+      const pos = toRel(ev.clientX, ev.clientY);
+      if (!pos) return;
+      const dx = pos.x - startPos.x;
+      const dy = pos.y - startPos.y;
+      setSelection(calcNewSelection('box', s, dx, dy));
+    };
 
-      const onMove = (ev: MouseEvent) => {
-        const pos = toRel(ev.clientX, ev.clientY);
-        if (!pos) return;
-        setSelection({
-          x: Math.max(0, Math.min(1 - startSel.w, startSel.x + pos.x - startPos.x)),
-          y: Math.max(0, Math.min(1 - startSel.h, startSel.y + pos.y - startPos.y)),
-          w: startSel.w,
-          h: startSel.h,
-        });
-      };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
 
-      const onUp = () => {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-        selectionBoxRef.current?.focus();
-      };
-
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    },
-    [selection, toRel],
-  );
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [selection, toRel]);
 
   // ── Resize (handle mousedown) ──────────────────────────────────────────────
 
-  const startResize = useCallback(
-    (e: React.MouseEvent, handle: ResizeHandle) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (!selection) return;
+  const startResize = useCallback((e: React.MouseEvent, handle: ResizeHandle) => {
+    e.preventDefault(); e.stopPropagation();
+    if (!selection) return;
+    setFocused(handle);
 
-      // focus the clicked handle
-      setFocused(handle);
-      selectionBoxRef.current?.focus();
+    const startPos = toRel(e.clientX, e.clientY);
+    if (!startPos) return;
+    const s = { ...selection };
 
-      const startPos = toRel(e.clientX, e.clientY);
-      if (!startPos) return;
-      const s = { ...selection };
+    const onMove = (ev: MouseEvent) => {
+      const pos = toRel(ev.clientX, ev.clientY);
+      if (!pos) return;
+      const dx = pos.x - startPos.x;
+      const dy = pos.y - startPos.y;
+      setSelection(calcNewSelection(handle, s, dx, dy));
+    };
 
-      const onMove = (ev: MouseEvent) => {
-        const pos = toRel(ev.clientX, ev.clientY);
-        if (!pos) return;
-        const dx = pos.x - startPos.x;
-        const dy = pos.y - startPos.y;
-        let { x, y, w, h } = s;
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
 
-        if (handle === 'tl' || handle === 'ml' || handle === 'bl') {
-          const nx = Math.max(0, Math.min(s.x + s.w - MIN_SIZE, s.x + dx));
-          w = s.x + s.w - nx;
-          x = nx;
-        }
-        if (handle === 'tr' || handle === 'mr' || handle === 'br') {
-          w = Math.max(MIN_SIZE, Math.min(1 - s.x, s.w + dx));
-        }
-        if (handle === 'tl' || handle === 'tc' || handle === 'tr') {
-          const ny = Math.max(0, Math.min(s.y + s.h - MIN_SIZE, s.y + dy));
-          h = s.y + s.h - ny;
-          y = ny;
-        }
-        if (handle === 'bl' || handle === 'bc' || handle === 'br') {
-          h = Math.max(MIN_SIZE, Math.min(1 - s.y, s.h + dy));
-        }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [selection, toRel]);
 
-        setSelection({ x, y, w, h });
-      };
+  useImperativeHandle(ref, () => ({ handleKeyDown: (e: KeyboardEvent) => {
+    const target = focusedRef.current;
+    if (!target) return false;
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return false;
 
-      const onUp = () => {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-        selectionBoxRef.current?.focus();
-      };
+    const dr = displayRectRef.current;
+    if (!dr) return false;
+    const stepX = 1 / dr.dw;
+    const stepY = 1 / dr.dh;
 
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    },
-    [selection, toRel],
-  );
+    let dx = 0; let dy = 0;
+    switch (e.key) {
+      case 'ArrowLeft': { dx = -stepX; break; }
+      case 'ArrowRight': { dx = stepX; break; }
+      case 'ArrowUp': { dy = -stepY; break; }
+      case 'ArrowDown': { dy = stepY; break; }
+    }
+    setSelection((prev) => calcNewSelection(target, prev!, dx, dy));
+    return true;
+  } }), []);
 
   // ── Confirm / Cancel ───────────────────────────────────────────────────────
 
-  const handleConfirm = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (selection) onCropComplete(selection);
-    },
+  const handleSubmit = useCallback(
+    (cancel: boolean) => onCropComplete(cancel ? null : selection),
     [selection, onCropComplete],
   );
-
-  const handleCancel = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    hideToolbar({ immediate: true });
-    setPhase('idle');
-    setSelection(null);
-    setFocused(null);
-    setHoveredBorder(null);
-    setHoveredHandle(null);
-  }, [hideToolbar]);
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -503,9 +383,7 @@ function CropSelector({
         <>
           {/* ── Selection box ────────────────────────────────────────────── */}
           <div
-            ref={selectionBoxRef}
             role="presentation"
-            tabIndex={-1}
             style={{
               position: 'absolute',
               left: px.left,
@@ -518,10 +396,8 @@ function CropSelector({
               pointerEvents: phase === 'selected' ? 'auto' : 'none',
               cursor: 'move',
               zIndex: 11,
-              outline: 'none',
             }}
             onMouseDown={phase === 'selected' ? startMove : undefined}
-            onKeyDown={phase === 'selected' ? onSelectionKeyDown : undefined}
             onMouseEnter={phase === 'selected' ? showToolbar : undefined}
             onMouseLeave={phase === 'selected' ? () => hideToolbar() : undefined}
           >
@@ -611,13 +487,12 @@ function CropSelector({
                   display: 'flex',
                   gap: 6,
                   zIndex: 9999,
-                  pointerEvents: 'auto',
+                  pointerEvents: 'none',
                 }}
-                onMouseDown={(e) => e.stopPropagation()}
               >
                 <button
                   type="button"
-                  onClick={handleConfirm}
+                  onClick={(e) => { e.stopPropagation(); handleSubmit(false); }}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -637,13 +512,14 @@ function CropSelector({
                     letterSpacing: '0.3px',
                     width: 64,
                     justifyContent: 'center',
+                    pointerEvents: 'auto',
                   }}
                 >
                   ✓ 确认
                 </button>
                 <button
                   type="button"
-                  onClick={handleCancel}
+                  onClick={(e) => { e.stopPropagation(); handleSubmit(true); }}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -663,6 +539,7 @@ function CropSelector({
                     letterSpacing: '0.3px',
                     width: 64,
                     justifyContent: 'center',
+                    pointerEvents: 'auto',
                   }}
                 >
                   ✕ 取消
@@ -677,4 +554,6 @@ function CropSelector({
   );
 }
 
-export default memo(CropSelector);
+export default memo(
+  forwardRef<CropSelectorHandle, Parameters<typeof CropSelector>[0]>(CropSelector),
+);

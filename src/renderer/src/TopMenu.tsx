@@ -36,7 +36,6 @@ function TopMenu({
   toggleDarkMode,
   isCropActive,
   onCropClick,
-  onCropResetClick,
 }: {
   filePath: string | undefined,
   fileFormat: string | undefined,
@@ -54,7 +53,6 @@ function TopMenu({
   toggleDarkMode: () => void,
   isCropActive: boolean,
   onCropClick: () => void,
-  onCropResetClick: () => void,
 }) {
   const { t } = useTranslation();
   const { customOutDir, changeOutDir, setCustomOutDir, simpleMode, outFormatLocked, setOutFormatLocked, darkMode } = useUserSettings();
@@ -99,7 +97,7 @@ function TopMenu({
       {filePath && (
         <>
           {isCropActive ? (
-            <Button onClick={withBlur(onCropResetClick)} title={t('Reset crop area')}>
+            <Button onClick={withBlur(onCropClick)} title={t('Reset crop area')}>
               <FaUndo style={{ fontSize: '.7em', marginRight: '.5em' }} />
               {t('Restore')}
             </Button>

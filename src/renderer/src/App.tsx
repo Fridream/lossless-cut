@@ -251,11 +251,7 @@ function App() {
 
   const hideAllNotifications = hideNotifications === 'all';
 
-  const showNotification = useCallback((opts: SweetAlertOptions) => {
-    if (!hideAllNotifications) {
-      getSwal().toast.fire(opts);
-    }
-  }, [hideAllNotifications]);
+  const showNotification = useCallback((opts: SweetAlertOptions) => getSwal().toast.fire(opts), []);
 
   const showOsNotification = useCallback((text: string) => {
     if (hideOsNotifications == null) {
@@ -403,6 +399,8 @@ function App() {
   const inCurrentCutSeg = useMemo(() => !!(currentCutSeg && relevantTime > currentCutSeg.start - 0.3 && (!currentCutSeg.end || relevantTime < currentCutSeg.end + 0.3)), [currentCutSeg, relevantTime]);
   // Display crop area: show segment's crop only when not selecting and when in segment range
   const activeCropArea = useMemo(() => (inCurrentCutSeg ? currentCutSeg?.cropArea : undefined), [inCurrentCutSeg, currentCutSeg]);
+  // 是否应该放大预览以及是否应该显示“恢复”按钮
+  const isCropActive = activeCropArea != null && !isCropSelecting;
   const checkCropSegment = useCallback(() => {
     if (inCurrentCutSeg) return true;
     showNotification({ title: i18n.t('未知区域'), text: i18n.t('请选择片段或进入片段范围内后再试！'), timer: 3000 });
@@ -416,18 +414,11 @@ function App() {
   }, [isFileOpened, checkCropSegment]);
 
   // Crop area: complete selection
-  const onCropComplete = useCallback((cropArea: CropArea) => {
+  const onCropComplete = useCallback((cropArea: CropArea | null) => {
     if (checkCropSegment()) {
+      const cropData = cropArea ?? undefined;
       setIsCropSelecting(false);
-      updateSegAtIndex(currentSegIndexSafe, { cropArea });
-    }
-  }, [currentSegIndexSafe, updateSegAtIndex, checkCropSegment]);
-
-  // Crop area: reset/restore
-  const resetCropArea = useCallback(() => {
-    if (checkCropSegment()) {
-      setIsCropSelecting(false);
-      updateSegAtIndex(currentSegIndexSafe, { cropArea: undefined });
+      updateSegAtIndex(currentSegIndexSafe, { cropArea: cropData });
     }
   }, [currentSegIndexSafe, updateSegAtIndex, checkCropSegment]);
 
@@ -439,16 +430,26 @@ function App() {
   }, [originalSetCutEnd]);
 
   const videoStyleWithCrop = useMemo<CSSProperties>(() => {
-    if (!activeCropArea) return videoStyle;
+    if (!isCropActive) return videoStyle;
     return { width: '100%', height: '100%' };
-  }, [activeCropArea]);
+  }, [isCropActive]);
+
+  const [videoSize, setVideoSize] = useState({ w: 0, h: 0 });
+  const [videoContainerSize, setVideoContainerSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const videoc = videoRef.current!; const handle = () => setVideoSize({ w: videoc.videoWidth, h: videoc.videoHeight });
+    videoc.addEventListener('loadedmetadata', handle); return () => videoc.removeEventListener('loadedmetadata', handle);
+  }, [videoRef]);
+  useEffect(() => {
+    const container = videoContainerRef.current!; const resizeObserver = new ResizeObserver(() => {
+      const rect = container.getBoundingClientRect(); setVideoContainerSize({ w: rect.width, h: rect.height });
+    }); resizeObserver.observe(container); return () => resizeObserver.disconnect();
+  }, [videoContainerRef]);
 
   // Compute the video style with crop zoom applied
   const wrapperStyleWithCrop = useMemo<CSSProperties>(() => {
-    if (!activeCropArea) return { position: 'relative', width: '100%', height: '100%' };
-
-    const vw = videoRef.current!.videoWidth;
-    const vh = videoRef.current!.videoHeight;
+    const { w: vw, h: vh } = videoSize; const { w: cw, h: ch } = videoContainerSize;
+    if (!isCropActive || !vw || !vh || !cw || !ch) return { position: 'relative', width: '100%', height: '100%' };
 
     const cropX = Math.ceil((activeCropArea.x * vw) / 2) * 2;
     const cropY = Math.ceil((activeCropArea.y * vh) / 2) * 2;
@@ -462,13 +463,23 @@ function App() {
     const w = cropW / vw;
     const h = cropH / vh;
 
-    const scale = Math.min(1 / w, 1 / h);
+    const crossA = cw * vh;
+    const crossB = vw * ch;
+
+    let wr; let hr;
+    if (crossA > crossB) {
+      hr = 1; wr = crossA / crossB;
+    } else {
+      wr = 1; hr = crossB / crossA;
+    }
+
+    const scale = Math.min(wr / w, hr / h);
     const cx = x + w / 2;
     const cy = y + h / 2;
 
     return {
       position: 'relative',
-      aspectRatio: `${videoRef.current?.videoWidth} / ${videoRef.current?.videoHeight}`,
+      aspectRatio: `${vw} / ${vh}`,
       maxWidth: '100%',
       maxHeight: '100%',
       flexShrink: 0,
@@ -482,10 +493,7 @@ function App() {
         ${x * 100}% ${(y + h) * 100}%
       )`,
     };
-  }, [activeCropArea, videoRef]);
-
-  // Whether the crop button should show "restore" mode
-  const isCropActive = activeCropArea != null || isCropSelecting;
+  }, [isCropActive, activeCropArea, videoSize, videoContainerSize]);
 
   // const getSafeCutTime = useCallback((cutTime, next) => ffmpeg.getSafeCutTime(neighbouringFrames, cutTime, next), [neighbouringFrames]);
 
@@ -1619,8 +1627,8 @@ function App() {
 
   const seekClosestKeyframe = useCallback((direction: number) => {
     const now = performance.now();
-    // 如果两次查找时间间隔小于1s，则使用用户上次转跳的时间作为基准而不是使用实际播放时间
-    const seekTimeBase = (now - lastKeyframeSeekTimeRef.current < 1000) && direction < 0 ? commandedTimeRef.current : getRelevantTime();
+    // 如果两次查找时间间隔小于3s，则使用用户上次转跳的时间作为基准而不是使用实际播放时间
+    const seekTimeBase = (now - lastKeyframeSeekTimeRef.current < 3000) && direction < 0 ? commandedTimeRef.current : getRelevantTime();
     const time = findNearestKeyFrameTime({ time: seekTimeBase, direction });
     if (time == null) return;
     lastKeyframeSeekTimeRef.current = now;
@@ -2236,7 +2244,7 @@ function App() {
     };
   }, []);
 
-  const { keyboardLayoutMap, updateKeyboardLayout } = useKeyboard({ keyBindings, keyUpActions, getKeyboardAction, closeExportConfirm, exportConfirmOpen });
+  const { keyboardLayoutMap, updateKeyboardLayout, cropSelectorHandleRef } = useKeyboard({ keyBindings, keyUpActions, getKeyboardAction, closeExportConfirm, exportConfirmOpen });
 
   useEffect(() => {
     // eslint-disable-next-line unicorn/prefer-add-event-listener
@@ -2559,7 +2567,6 @@ function App() {
                 toggleDarkMode={toggleDarkMode}
                 isCropActive={isCropActive}
                 onCropClick={startCropSelection}
-                onCropResetClick={resetCropArea}
               />
 
               <div style={{ flexGrow: 1, display: 'flex', overflowY: 'hidden' }}>
@@ -2609,7 +2616,7 @@ function App() {
                         {renderSubtitles()}
                       </video>
 
-                      {isCropSelecting && <CropSelector onCropComplete={onCropComplete} videoRef={videoRef} />}
+                      {isCropSelecting && <CropSelector ref={cropSelectorHandleRef} onCropComplete={onCropComplete} videoRef={videoRef} initialCrop={activeCropArea ?? null} />}
 
                       {filePath != null && compatPlayerEnabled && <MediaSourcePlayer rotate={effectiveRotation} filePath={filePath} videoStream={activeVideoStream} audioStreams={activeAudioStreams} masterVideoRef={videoRef} mediaSourceQuality={mediaSourceQuality} />}
                     </div>
