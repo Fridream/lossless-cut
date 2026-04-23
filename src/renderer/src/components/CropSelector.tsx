@@ -492,7 +492,7 @@ function CropSelector({ onCropComplete, videoRef, initialCrop }: {
               >
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); handleSubmit(false); }}
+                  onClick={() => handleSubmit(false)}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -519,7 +519,7 @@ function CropSelector({ onCropComplete, videoRef, initialCrop }: {
                 </button>
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); handleSubmit(true); }}
+                  onClick={() => handleSubmit(true)}
                   style={{
                     display: 'flex',
                     alignItems: 'center',

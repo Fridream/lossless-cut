@@ -38,10 +38,11 @@ export default ({ filePath }: { filePath: string | undefined }) => {
   const seekToRef = useRef<number>();
 
   const smoothSeek = useCallback((seekTo: number) => {
+    const adjustSeekTo = seekTo + 0.001;
     if (seekingRef.current) {
-      seekToRef.current = seekTo;
+      seekToRef.current = adjustSeekTo;
     } else {
-      videoRef.current!.currentTime = seekTo;
+      videoRef.current!.currentTime = adjustSeekTo;
       // safety precaution:
       seekingRef.current = setTimeout(() => {
         seekingRef.current = undefined;
@@ -83,7 +84,7 @@ export default ({ filePath }: { filePath: string | undefined }) => {
     if (filePath == null) return;
     const video = videoRef.current;
     if (video == null || val == null || Number.isNaN(val)) return;
-    let outVal = val + 0.0005; // 缓解计算误差
+    let outVal = val;
     if (outVal < 0) outVal = 0;
     if (outVal > video.duration) outVal = video.duration;
 

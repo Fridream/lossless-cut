@@ -115,6 +115,8 @@ export type EdlExportType = 'csv' | 'tsv-human' | 'csv-human' | 'csv-frames' | '
 
 export type TunerType = 'wheelSensitivity' | 'waveformHeight' | 'keyboardNormalSeekSpeed' | 'keyboardSeekSpeed2' | 'keyboardSeekSpeed3' | 'keyboardSeekAccFactor';
 
+export type CropStatus = 'none' | 'selecting' | 'selected';
+
 export interface WaveformBase {
   createdAt: Date,
 }

@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { memo, useCallback, useEffect, useRef } from 'react';
 import { IoIosSettings } from 'react-icons/io';
-import { FaCrop, FaFilter, FaList, FaLock, FaMoon, FaSun, FaTimes, FaUndo, FaUnlock } from 'react-icons/fa';
+import { FaCropAlt, FaEdit, FaFilter, FaList, FaLock, FaMoon, FaSun, FaTimes, FaUnlock } from 'react-icons/fa';
 import { useTranslation } from 'react-i18next';
 import Button from './components/Button';
 
@@ -11,6 +11,7 @@ import { withBlur } from './util';
 import { primaryTextColor, controlsBackground, darkModeTransition } from './colors';
 import useUserSettings from './hooks/useUserSettings';
 import styles from './TopMenu.module.css';
+import type { CropStatus } from './types';
 
 
 const { stat } = window.require('fs/promises');
@@ -34,7 +35,7 @@ function TopMenu({
   isCustomFormatSelected,
   clearOutDir,
   toggleDarkMode,
-  isCropActive,
+  cropStatus,
   onCropClick,
 }: {
   filePath: string | undefined,
@@ -51,8 +52,8 @@ function TopMenu({
   isCustomFormatSelected: boolean,
   clearOutDir: () => void,
   toggleDarkMode: () => void,
-  isCropActive: boolean,
-  onCropClick: () => void,
+  cropStatus: CropStatus,
+  onCropClick: { start: () => void, cancel: () => void },
 }) {
   const { t } = useTranslation();
   const { customOutDir, changeOutDir, setCustomOutDir, simpleMode, outFormatLocked, setOutFormatLocked, darkMode } = useUserSettings();
@@ -96,17 +97,22 @@ function TopMenu({
     >
       {filePath && (
         <>
-          {isCropActive ? (
-            <Button onClick={withBlur(onCropClick)} title={t('Reset crop area')}>
-              <FaUndo style={{ fontSize: '.7em', marginRight: '.5em' }} />
-              {t('Restore')}
+          {cropStatus === 'selected' ? ( // 有选区数据，显示修改
+            <Button onClick={withBlur(onCropClick.start)} title={t('Modify crop area')}>
+              <FaEdit style={{ fontSize: '.7em', marginRight: '.5em' }} />
+              {t('Modify')}
             </Button>
-          ) : (
-            <Button onClick={withBlur(onCropClick)} title={t('Select a crop area on the video')}>
-              <FaCrop style={{ fontSize: '.7em', marginRight: '.5em' }} />
+          ) : (cropStatus === 'selecting' ? ( // 正在选区中，显示取消
+            <Button onClick={withBlur(onCropClick.cancel)} title={t('Delete crop area')}>
+              <FaTimes style={{ fontSize: '.7em', marginRight: '.5em' }} />
+              {t('Cancel')}
+            </Button>
+          ) : ( // cropStatus === 'none' 无选区数据，显示选区
+            <Button onClick={withBlur(onCropClick.start)} title={t('Create crop area')}>
+              <FaCropAlt style={{ fontSize: '.7em', marginRight: '.5em' }} />
               {t('Crop')}
             </Button>
-          )}
+          ))}
 
           <Button onClick={withBlur(() => setStreamsSelectorShown(true))}>
             <FaList style={{ fontSize: '.7em', marginRight: '.5em' }} />

@@ -93,7 +93,7 @@ import { rightBarWidth, leftBarWidth, ffmpegExtractWindow, zoomMax } from './uti
 import BigWaveform from './components/BigWaveform';
 import CropSelector from './components/CropSelector';
 
-import type { BatchFile, Chapter, CropArea, CustomTagsByFile, EdlExportType, EdlFileType, EdlImportType, FfmpegCommandLog, FilesMeta, FileStats, ParamsByStreamId, PlaybackMode, SegmentBase, SegmentColorIndex, SegmentTags, StateSegment, TunerType } from './types';
+import type { BatchFile, Chapter, CropArea, CropStatus, CustomTagsByFile, EdlExportType, EdlFileType, EdlImportType, FfmpegCommandLog, FilesMeta, FileStats, ParamsByStreamId, PlaybackMode, SegmentBase, SegmentColorIndex, SegmentTags, StateSegment, TunerType } from './types';
 import { goToTimecodeDirectArgsSchema, openFilesActionArgsSchema } from './types';
 import type { CaptureFormat, KeyboardAction, ApiActionRequest, SmartCutPreset } from '../../common/types.js';
 import type { FFprobeChapter, FFprobeStream } from '../../common/ffprobe.js';
@@ -399,26 +399,30 @@ function App() {
   const inCurrentCutSeg = useMemo(() => !!(currentCutSeg && relevantTime > currentCutSeg.start - 0.3 && (!currentCutSeg.end || relevantTime < currentCutSeg.end + 0.3)), [currentCutSeg, relevantTime]);
   // Display crop area: show segment's crop only when not selecting and when in segment range
   const activeCropArea = useMemo(() => (inCurrentCutSeg ? currentCutSeg?.cropArea : undefined), [inCurrentCutSeg, currentCutSeg]);
-  // 是否应该放大预览以及是否应该显示“恢复”按钮
-  const isCropActive = activeCropArea != null && !isCropSelecting;
+  // 选区状态，用于判断是否应该放大预览以及按钮显示
+  const cropStatus: CropStatus = isCropSelecting ? 'selecting' : (activeCropArea != null ? 'selected' : 'none');
   const checkCropSegment = useCallback(() => {
     if (inCurrentCutSeg) return true;
     showNotification({ title: i18n.t('未知区域'), text: i18n.t('请选择片段或进入片段范围内后再试！'), timer: 3000 });
     return false;
   }, [inCurrentCutSeg, showNotification]);
 
-  // Crop area: start selecting
+  // 开始/修改选区数据
   const startCropSelection = useCallback(() => {
-    if (!isFileOpened) return;
     if (checkCropSegment()) setIsCropSelecting(true);
-  }, [isFileOpened, checkCropSegment]);
-
-  // Crop area: complete selection
-  const onCropComplete = useCallback((cropArea: CropArea | null) => {
+  }, [checkCropSegment]);
+  // 结束/恢复选区数据
+  const endCropSelection = useCallback((cropArea: CropArea | null) => {
     if (checkCropSegment()) {
-      const cropData = cropArea ?? undefined;
-      setIsCropSelecting(false);
-      updateSegAtIndex(currentSegIndexSafe, { cropArea: cropData });
+      setIsCropSelecting(false); if (cropArea == null) return;
+      updateSegAtIndex(currentSegIndexSafe, { cropArea });
+    }
+  }, [currentSegIndexSafe, updateSegAtIndex, checkCropSegment]);
+  // 取消/清空选区数据
+  const clearCropSelection = useCallback(() => {
+    if (checkCropSegment()) {
+      setIsCropSelecting(false); const cropArea = undefined;
+      updateSegAtIndex(currentSegIndexSafe, { cropArea });
     }
   }, [currentSegIndexSafe, updateSegAtIndex, checkCropSegment]);
 
@@ -430,9 +434,9 @@ function App() {
   }, [originalSetCutEnd]);
 
   const videoStyleWithCrop = useMemo<CSSProperties>(() => {
-    if (!isCropActive) return videoStyle;
+    if (cropStatus !== 'selected') return videoStyle;
     return { width: '100%', height: '100%' };
-  }, [isCropActive]);
+  }, [cropStatus]);
 
   const [videoSize, setVideoSize] = useState({ w: 0, h: 0 });
   const [videoContainerSize, setVideoContainerSize] = useState({ w: 0, h: 0 });
@@ -449,12 +453,12 @@ function App() {
   // Compute the video style with crop zoom applied
   const wrapperStyleWithCrop = useMemo<CSSProperties>(() => {
     const { w: vw, h: vh } = videoSize; const { w: cw, h: ch } = videoContainerSize;
-    if (!isCropActive || !vw || !vh || !cw || !ch) return { position: 'relative', width: '100%', height: '100%' };
+    if (cropStatus !== 'selected' || !vw || !vh || !cw || !ch) return { position: 'relative', width: '100%', height: '100%' };
 
-    const cropX = Math.ceil((activeCropArea.x * vw) / 2) * 2;
-    const cropY = Math.ceil((activeCropArea.y * vh) / 2) * 2;
-    const cropXe = Math.floor(((activeCropArea.x + activeCropArea.w) * vw) / 2) * 2;
-    const cropYe = Math.floor(((activeCropArea.y + activeCropArea.h) * vh) / 2) * 2;
+    const cropX = Math.ceil((activeCropArea!.x * vw) / 2) * 2;
+    const cropY = Math.ceil((activeCropArea!.y * vh) / 2) * 2;
+    const cropXe = Math.floor(((activeCropArea!.x + activeCropArea!.w) * vw) / 2) * 2;
+    const cropYe = Math.floor(((activeCropArea!.y + activeCropArea!.h) * vh) / 2) * 2;
     const cropW = Math.max(2, cropXe - cropX);
     const cropH = Math.max(2, cropYe - cropY);
 
@@ -493,7 +497,7 @@ function App() {
         ${x * 100}% ${(y + h) * 100}%
       )`,
     };
-  }, [isCropActive, activeCropArea, videoSize, videoContainerSize]);
+  }, [cropStatus, activeCropArea, videoSize, videoContainerSize]);
 
   // const getSafeCutTime = useCallback((cutTime, next) => ffmpeg.getSafeCutTime(neighbouringFrames, cutTime, next), [neighbouringFrames]);
 
@@ -1623,17 +1627,12 @@ function App() {
   const toggleLastCommands = useCallback(() => setLastCommandsVisible((val) => !val), []);
   const toggleSettings = useCallback(() => setSettingsVisible((val) => !val), []);
 
-  const lastKeyframeSeekTimeRef = useRef(0);
-
   const seekClosestKeyframe = useCallback((direction: number) => {
-    const now = performance.now();
-    // 如果两次查找时间间隔小于3s，则使用用户上次转跳的时间作为基准而不是使用实际播放时间
-    const seekTimeBase = (now - lastKeyframeSeekTimeRef.current < 3000) && direction < 0 ? commandedTimeRef.current : getRelevantTime();
+    let seekTimeBase = getRelevantTime();
+    if (playingRef.current && direction < 0 && seekTimeBase > 1.5) seekTimeBase -= 1.5;
     const time = findNearestKeyFrameTime({ time: seekTimeBase, direction });
-    if (time == null) return;
-    lastKeyframeSeekTimeRef.current = now;
     seekAbs(time);
-  }, [findNearestKeyFrameTime, getRelevantTime, seekAbs, commandedTimeRef]);
+  }, [findNearestKeyFrameTime, getRelevantTime, seekAbs, playingRef]);
 
   const onTimelineWheel = useTimelineScroll({ wheelSensitivity, mouseWheelZoomModifierKey, mouseWheelFrameSeekModifierKey, mouseWheelKeyframeSeekModifierKey, invertTimelineScroll, zoomRel, seekRel, shortStep, seekClosestKeyframe });
 
@@ -2565,8 +2564,8 @@ function App() {
                 setStreamsSelectorShown={setStreamsSelectorShown}
                 selectedSegments={segmentsOrInverse.selected}
                 toggleDarkMode={toggleDarkMode}
-                isCropActive={isCropActive}
-                onCropClick={startCropSelection}
+                cropStatus={cropStatus}
+                onCropClick={{ start: startCropSelection, cancel: clearCropSelection }}
               />
 
               <div style={{ flexGrow: 1, display: 'flex', overflowY: 'hidden' }}>
@@ -2616,7 +2615,7 @@ function App() {
                         {renderSubtitles()}
                       </video>
 
-                      {isCropSelecting && <CropSelector ref={cropSelectorHandleRef} onCropComplete={onCropComplete} videoRef={videoRef} initialCrop={activeCropArea ?? null} />}
+                      {isCropSelecting && <CropSelector ref={cropSelectorHandleRef} onCropComplete={endCropSelection} videoRef={videoRef} initialCrop={activeCropArea ?? null} />}
 
                       {filePath != null && compatPlayerEnabled && <MediaSourcePlayer rotate={effectiveRotation} filePath={filePath} videoStream={activeVideoStream} audioStreams={activeAudioStreams} masterVideoRef={videoRef} mediaSourceQuality={mediaSourceQuality} />}
                     </div>
