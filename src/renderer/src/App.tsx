@@ -93,7 +93,7 @@ import { rightBarWidth, leftBarWidth, ffmpegExtractWindow, zoomMax } from './uti
 import BigWaveform from './components/BigWaveform';
 import CropSelector from './components/CropSelector';
 
-import type { BatchFile, Chapter, CropArea, CropStatus, CustomTagsByFile, EdlExportType, EdlFileType, EdlImportType, FfmpegCommandLog, FilesMeta, FileStats, ParamsByStreamId, PlaybackMode, SegmentBase, SegmentColorIndex, SegmentTags, StateSegment, TunerType } from './types';
+import type { BatchFile, Chapter, CropArea, CropStatus, CustomTagsByFile, EdlExportType, EdlFileType, EdlImportType, FfmpegCommandLog, FilesMeta, FileStats, ParamsByStreamId, PlaybackMode, SegmentBase, SegmentColorIndex, SegmentOpType, SegmentTags, StateSegment, TunerType } from './types';
 import { goToTimecodeDirectArgsSchema, openFilesActionArgsSchema } from './types';
 import type { CaptureFormat, KeyboardAction, ApiActionRequest, SmartCutPreset } from '../../common/types.js';
 import type { FFprobeChapter, FFprobeStream } from '../../common/ffprobe.js';
@@ -686,29 +686,35 @@ function App() {
   const shouldShowWaveform = calcShouldShowWaveform(zoomedDuration) || overviewWaveform != null;
 
   const areWeCutting = useMemo(() => segmentsToExport.some(({ start, end, cropArea }) => isCuttingStart(start) || isCuttingEnd(end, fileDuration) || cropArea), [fileDuration, segmentsToExport]);
+  const getSegmentOpType = useCallback(async (segment: { start: number, end?: number | undefined, cropArea?: CropArea | undefined }): Promise<SegmentOpType> => {
+    if (!filePath || !mainVideoStream || segment.end == null) return ''; if (lossyMode || segment.cropArea) return '全重编';
+    let frames = await readFramesAroundTime({ filePath, streamIndex: mainVideoStream.index, aroundTime: segment.start, window: 3 }); let minNearTime = 3; let minNearFrame;
+    for (const frame of frames) if (Math.abs(frame.time - segment.start) < minNearTime) { minNearTime = Math.abs(frame.time - segment.start); minNearFrame = frame; }
+    const exactCutFrom = minNearFrame!.time;
+    frames = await readFramesAroundTime({ filePath, streamIndex: mainVideoStream.index, aroundTime: segment.end, window: 3 }); minNearTime = 3; minNearFrame = undefined;
+    for (const frame of frames) if (Math.abs(frame.time - segment.end) < minNearTime) { minNearTime = Math.abs(frame.time - segment.end); minNearFrame = frame; }
+    const exactCutTo = isCuttingEnd(segment.end, fileDuration) ? minNearFrame!.time : fileDuration!;
+    const { losslessCutFrom, losslessCutTo, losslessCutToPTS } = await needsSmartCut({ path: filePath, exactCutFrom, exactCutTo, fileDuration, videoStream: mainVideoStream });
+    if (losslessCutTo == null) return '全重编'; if (losslessCutFrom == null && losslessCutToPTS == null) return '全复制';
+    if (losslessCutFrom == null) return '尾重编'; if (losslessCutToPTS == null) return '头重编'; return '双重编';
+  }, [filePath, fileDuration, mainVideoStream]);
   const [exportInfo, setExportInfo] = useState({ copyCount: 0, encodeCount: 0, concatCount: 0 });
   useEffect(() => {
     if (!filePath || !mainVideoStream) { setExportInfo({ copyCount: 0, encodeCount: 0, concatCount: 0 }); return; }
     if (segmentsToExport.length === 0) { setExportInfo({ copyCount: 1, encodeCount: 0, concatCount: 0 }); return; }
-    (async () => {
+    Promise.all(segmentsToExport.map((segment) => getSegmentOpType(segment))).then((segmentsOpType) => {
       let copyCount = 0; let encodeCount = 0; let concatCount = 0;
-      for (const segment of segmentsToExport) {
-        if (lossyMode || segment.cropArea) encodeCount += 1;
-        else {
-          let frames = await readFramesAroundTime({ filePath, streamIndex: mainVideoStream.index, aroundTime: segment.start, window: 3 }); let minNearTime = 3; let minNearFrame;
-          for (const frame of frames) if (Math.abs(frame.time - segment.start) < minNearTime) { minNearTime = Math.abs(frame.time - segment.start); minNearFrame = frame; }
-          const exactCutFrom = minNearFrame!.time;
-          frames = await readFramesAroundTime({ filePath, streamIndex: mainVideoStream.index, aroundTime: segment.end, window: 3 }); minNearTime = 3; minNearFrame = undefined;
-          for (const frame of frames) if (Math.abs(frame.time - segment.end) < minNearTime) { minNearTime = Math.abs(frame.time - segment.end); minNearFrame = frame; }
-          const exactCutTo = isCuttingEnd(segment.end, fileDuration) ? minNearFrame!.time : fileDuration!;
-          const { losslessCutFrom, losslessCutTo, losslessCutToPTS } = await needsSmartCut({ path: filePath, exactCutFrom, exactCutTo, fileDuration, videoStream: mainVideoStream });
-          if (losslessCutTo == null) encodeCount += 1;
-          else if (losslessCutFrom == null && losslessCutToPTS == null) copyCount += 1;
-          else { concatCount += 1; copyCount += 1; if (losslessCutFrom != null) encodeCount += 1; if (losslessCutToPTS != null) encodeCount += 1; }
+      for (const segmentOpType of segmentsOpType) {
+        switch (segmentOpType) {
+          case '全复制': { copyCount += 1; break; }
+          case '全重编': { encodeCount += 1; break; }
+          case '头重编': { copyCount += 1; encodeCount += 1; concatCount += 1; break; }
+          case '尾重编': { copyCount += 1; encodeCount += 1; concatCount += 1; break; }
+          case '双重编': { copyCount += 1; encodeCount += 2; concatCount += 1; break; }
         }
       } setExportInfo({ copyCount, encodeCount, concatCount });
-    })();
-  }, [filePath, fileDuration, mainVideoStream, segmentsToExport]);
+    });
+  }, [filePath, mainVideoStream, segmentsToExport, getSegmentOpType]);
 
   const {
     concatFiles, html5ifyDummy, cutMultiple, concatCutSegments, html5ify, fixInvalidDuration, extractStreams, tryDeleteFiles,
@@ -2706,6 +2712,7 @@ function App() {
                       setEditingSegmentTagsSegmentIndex={setEditingSegmentTagsSegmentIndex}
                       onEditSegmentTags={onEditSegmentTags}
                       getSegEstimatedSize={getSegEstimatedSize}
+                      getSegmentOpType={getSegmentOpType}
                     />
                   )}
                 </AnimatePresence>

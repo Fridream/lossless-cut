@@ -117,6 +117,8 @@ export type TunerType = 'wheelSensitivity' | 'waveformHeight' | 'keyboardNormalS
 
 export type CropStatus = 'none' | 'selecting' | 'selected';
 
+export type SegmentOpType = '' | '全复制' | '全重编' | '头重编' | '尾重编' | '双重编';
+
 export interface WaveformBase {
   createdAt: Date,
 }

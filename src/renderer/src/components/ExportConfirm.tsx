@@ -593,11 +593,11 @@ function ExportConfirm({
                 <td>
                   预计{' '}
                   <span style={{ color: exportInfo.copyCount > 0 ? '#34d399' : undefined }}>
-                    复制 {exportInfo.copyCount} 次
-                  </span>，
+                    复制 {exportInfo.copyCount} 次，
+                  </span>
                   <span style={{ color: exportInfo.encodeCount > 0 ? '#34d399' : undefined }}>
-                    重编码 {exportInfo.encodeCount} 次
-                  </span>，
+                    重编码 {exportInfo.encodeCount} 次，
+                  </span>
                   <span style={{ color: exportInfo.concatCount > 0 ? '#34d399' : undefined }}>
                     合并 {exportInfo.concatCount} 次
                   </span>
