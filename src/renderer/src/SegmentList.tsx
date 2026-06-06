@@ -20,7 +20,7 @@ import { saveColor, controlsBackground, primaryTextColor, darkModeTransition } f
 import { useSegColors } from './contexts';
 import { getSegmentTags } from './segments';
 import TagEditor from './components/TagEditor';
-import type { ContextMenuTemplate, DefiniteSegmentBase, FormatTimecode, GetFrameCount, InverseCutSegment, SegmentBase, SegmentColorIndex, SegmentTags, StateSegment } from './types';
+import type { ContextMenuTemplate, CropArea, DefiniteSegmentBase, FormatTimecode, GetFrameCount, InverseCutSegment, SegmentBase, SegmentColorIndex, SegmentOpType, SegmentTags, StateSegment } from './types';
 import type { UseSegments } from './hooks/useSegments';
 import * as Dialog from './components/Dialog';
 import { DialogButton } from './components/Button';
@@ -67,6 +67,7 @@ const Segment = memo(({
   onInvertSelectedSegments,
   onDuplicateSegmentClick,
   getSegEstimatedSize,
+  getSegmentOpType,
 }: {
   seg: StateSegment | InverseCutSegment,
   index: number,
@@ -99,6 +100,7 @@ const Segment = memo(({
   onInvertSelectedSegments: UseSegments['invertSelectedSegments'],
   onDuplicateSegmentClick: UseSegments['duplicateSegment'],
   getSegEstimatedSize: UseSegments['getSegEstimatedSize'],
+  getSegmentOpType: (segment: { start: number, end?: number | undefined, cropArea?: CropArea | undefined }) => Promise<SegmentOpType>,
 }) => {
   const { invertCutSegments, darkMode } = useUserSettings();
   const { t } = useTranslation();
@@ -156,6 +158,16 @@ const Segment = memo(({
 
   const duration = useMemo(() => (seg.end == null ? undefined : seg.end - seg.start), [seg]);
   const estimatedSize = useMemo(() => getSegEstimatedSize(seg), [getSegEstimatedSize, seg]);
+  const [segmentOpType, setSegmentOpType] = useState<SegmentOpType>('');
+  const initial = 'initial' in seg ? seg.initial : undefined;
+  const cropArea = 'cropArea' in seg ? seg.cropArea : undefined;
+  useEffect(() => {
+    (async () => {
+      if (invertCutSegments) { setSegmentOpType(''); return; }
+      if (initial) { setSegmentOpType('全复制'); return; }
+      setSegmentOpType(await getSegmentOpType({ start: seg.start, end: seg.end, cropArea }));
+    })();
+  }, [seg.start, seg.end, initial, cropArea, getSegmentOpType, invertCutSegments]);
 
   const timeStr = useMemo(() => (
     seg.end == null
@@ -270,8 +282,9 @@ const Segment = memo(({
 
       {duration != null && (
         <>
-          <div style={{ fontSize: '.75em' }}>
-            {t('Duration')} {formatTimecode({ seconds: duration, shorten: true })}
+          <div style={{ fontSize: '.75em', display: 'flex', justifyContent: 'space-between' }}>
+            <span>{t('Duration')} {formatTimecode({ seconds: duration, shorten: true })}</span>
+            <span>{segmentOpType}</span>
           </div>
           <div style={{ fontSize: '.75em' }}>
             <Trans>{{ durationMsFormatted: Math.floor(duration * 1000) }} ms</Trans>
@@ -336,6 +349,7 @@ function SegmentList({
   setEditingSegmentTagsSegmentIndex,
   onEditSegmentTags,
   getSegEstimatedSize,
+  getSegmentOpType,
 }: {
   width: number,
   formatTimecode: FormatTimecode,
@@ -377,6 +391,7 @@ function SegmentList({
   setEditingSegmentTagsSegmentIndex: Dispatch<SetStateAction<number | undefined>>,
   onEditSegmentTags: (index: number) => void,
   getSegEstimatedSize: UseSegments['getSegEstimatedSize'],
+  getSegmentOpType: (segment: { start: number, end?: number | undefined, cropArea?: CropArea | undefined }) => Promise<SegmentOpType>,
 }) {
   const { t } = useTranslation();
   const { getSegColor, nextSegColorIndex } = useSegColors();
@@ -608,6 +623,7 @@ function SegmentList({
         onInvertSelectedSegments={onInvertSelectedSegments}
         onDuplicateSegmentClick={onDuplicateSegmentClick}
         getSegEstimatedSize={getSegEstimatedSize}
+        getSegmentOpType={getSegmentOpType}
       />
     );
   }

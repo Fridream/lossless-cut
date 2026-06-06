@@ -23,7 +23,7 @@ import type { SegmentToExport } from '../types';
 import type { GenerateOutFileNames } from '../util/outputNameTemplate';
 import { defaultCutFileTemplate, defaultCutMergedFileTemplate } from '../util/outputNameTemplate';
 import type { FFprobeStream } from '../../../common/ffprobe';
-import type { AvoidNegativeTs, PreserveMetadata, SmartCutPreset } from '../../../common/types';
+import type { PreserveMetadata, SmartCutPreset } from '../../../common/types';
 import TextInput from './TextInput';
 import type { UseSegments } from '../hooks/useSegments';
 import ExportSheet from './ExportSheet';
@@ -132,8 +132,6 @@ function ExportConfirm({
   currentSegIndexSafe,
   segmentsOrInverse,
   mainCopiedThumbnailStreams,
-  needSmartCut,
-  isEncoding,
   toggleSettings,
   outputPlaybackRate,
   lossyMode,
@@ -145,6 +143,7 @@ function ExportConfirm({
   setSmartCutPreset,
   forceFixConcat,
   setForceFixConcat,
+  exportInfo,
 } : {
   areWeCutting: boolean,
   segmentsToExport: SegmentToExport[],
@@ -165,8 +164,6 @@ function ExportConfirm({
   currentSegIndexSafe: number,
   segmentsOrInverse: UseSegments['segmentsOrInverse'],
   mainCopiedThumbnailStreams: FFprobeStream[],
-  needSmartCut: boolean,
-  isEncoding: boolean,
   toggleSettings: () => void,
   outputPlaybackRate: number,
   lossyMode: LossyMode | undefined,
@@ -178,10 +175,11 @@ function ExportConfirm({
   setSmartCutPreset: Dispatch<SetStateAction<SmartCutPreset>>,
   forceFixConcat: boolean,
   setForceFixConcat: Dispatch<SetStateAction<boolean>>,
+  exportInfo: { copyCount: number, encodeCount: number, concatCount: number },
 }) {
   const { t } = useTranslation();
 
-  const { keyframeCut, toggleKeyframeCut, preserveMovData, setPreserveMovData, preserveMetadata, setPreserveMetadata, preserveChapters, setPreserveChapters, movFastStart, setMovFastStart, avoidNegativeTs, setAvoidNegativeTs, autoDeleteMergedSegments, exportConfirmEnabled, toggleExportConfirmEnabled, segmentsToChapters, setSegmentsToChapters, preserveMetadataOnMerge, setPreserveMetadataOnMerge, enableSmartCut, setEnableSmartCut, effectiveExportMode, enableOverwriteOutput, setEnableOverwriteOutput, ffmpegExperimental, setFfmpegExperimental, cutFromAdjustmentFrames, setCutFromAdjustmentFrames, cutToAdjustmentFrames, setCutToAdjustmentFrames, setCutFileTemplate, setCutMergedFileTemplate, simpleMode, keyframesEnabled } = useUserSettings();
+  const { preserveMovData, setPreserveMovData, preserveMetadata, setPreserveMetadata, preserveChapters, setPreserveChapters, movFastStart, setMovFastStart, autoDeleteMergedSegments, exportConfirmEnabled, toggleExportConfirmEnabled, segmentsToChapters, setSegmentsToChapters, preserveMetadataOnMerge, setPreserveMetadataOnMerge, effectiveExportMode, enableOverwriteOutput, setEnableOverwriteOutput, ffmpegExperimental, setFfmpegExperimental, cutFromAdjustmentFrames, setCutFromAdjustmentFrames, cutToAdjustmentFrames, setCutToAdjustmentFrames, setCutFileTemplate, setCutMergedFileTemplate, simpleMode, keyframesEnabled } = useUserSettings();
 
   const [showAdvanced, setShowAdvanced] = useState(!simpleMode);
 
@@ -209,25 +207,11 @@ function ExportConfirm({
   }, [neighbouringKeyFrames.length, segmentsToExport, findNearestKeyFrameTime]);
 
   const notices = useMemo(() => {
-    const specific: Record<'exportMode' | 'problematicStreams' | 'movFastStart' | 'preserveMovData' | 'smartCut' | 'cutMode' | 'avoidNegativeTs' | 'overwriteOutput', Notice | undefined> = {
+    const specific: Record<'exportMode' | 'problematicStreams' | 'movFastStart' | 'preserveMovData' | 'overwriteOutput', Notice | undefined> = {
       exportMode: effectiveExportMode === 'segments_to_chapters' ? { text: i18n.t('Segments to chapters mode is active, this means that the file will not be cut. Instead chapters will be created from the segments.') } : undefined,
       problematicStreams: areWeCuttingProblematicStreams ? { warning: true, text: <Trans>Warning: Cutting thumbnail tracks is known to cause problems. Consider disabling track {{ trackNumber: mainCopiedThumbnailStreams[0] ? mainCopiedThumbnailStreams[0].index + 1 : 0 }}.</Trans> } : undefined,
       movFastStart: isMov && isIpod && !movFastStart ? { warning: true, text: t('For the ipod format, it is recommended to activate this option') } : undefined,
       preserveMovData: isMov && isIpod && preserveMovData ? { warning: true, text: t('For the ipod format, it is recommended to deactivate this option') } : undefined,
-      smartCut: areWeCutting && needSmartCut ? { warning: true, text: t('Smart cut is experimental and will not work on all files.') } : undefined,
-      cutMode: areWeCutting && !isEncoding && !keyframeCut ? { text: t('Note: Keyframe cut is recommended for most common files') } : undefined,
-      avoidNegativeTs: !isEncoding ? (() => {
-        if (willMerge) {
-          if (avoidNegativeTs !== 'make_non_negative') {
-            return { text: t('When merging, it\'s generally recommended to set this to "make_non_negative"') };
-          }
-          return undefined;
-        }
-        if (!['make_zero', 'auto'].includes(avoidNegativeTs)) {
-          return { text: t('It\'s generally recommended to set this to one of: {{values}}', { values: '"auto", "make_zero"' }) };
-        }
-        return undefined;
-      })() : undefined,
       overwriteOutput: enableOverwriteOutput ? { text: t('Existing files will be overwritten without warning!') } : undefined,
     };
 
@@ -255,7 +239,7 @@ function ExportConfirm({
       specific,
       totalNum: generic.filter((n) => n.warning).length + Object.values(specific).filter((n) => n != null && n.warning).length,
     };
-  }, [areWeCutting, areWeCuttingProblematicStreams, avoidNegativeTs, effectiveExportMode, enableOverwriteOutput, isEncoding, isIpod, isMov, keyframeCut, keyframesEnabled, mainCopiedThumbnailStreams, movFastStart, needSmartCut, outFormat, outputPlaybackRate, preserveMovData, haveSegmentWithProblematicKeyframe, t, willMerge]);
+  }, [areWeCutting, areWeCuttingProblematicStreams, effectiveExportMode, enableOverwriteOutput, isIpod, isMov, keyframesEnabled, mainCopiedThumbnailStreams, movFastStart, outFormat, outputPlaybackRate, preserveMovData, haveSegmentWithProblematicKeyframe, t]);
 
   const exportModeDescription = useMemo(() => ({
     segments_to_chapters: t('Don\'t cut the file, but instead export an unmodified original which has chapters generated from segments'),
@@ -286,14 +270,6 @@ function ExportConfirm({
     showHelpText({ text: i18n.t('Defaults to same format as input file. You can losslessly change the file format (container) of the file with this option. Not all formats support all codecs. Matroska/MP4/MOV support the most common codecs. Sometimes it\'s even impossible to export to the same output format as input.') });
   }, [showHelpText]);
 
-  const onKeyframeCutHelpPress = useCallback(() => {
-    showHelpText({ text: i18n.t('With "keyframe cut", we will cut at the nearest keyframe before the desired start cutpoint. This is recommended for most files. With "Normal cut" you may have to manually set the cutpoint a few frames before the next keyframe to achieve a precise cut') });
-  }, [showHelpText]);
-
-  const onSmartCutHelpPress = useCallback(() => {
-    showHelpText({ text: i18n.t('This experimental feature will re-encode the part of the video from the cutpoint until the next keyframe in order to attempt to make a 100% accurate cut. Only works on some files. I\'ve had success with some h264 files, and only a few h265 files. See more here: {{url}}', { url: 'https://github.com/mifi/lossless-cut/issues/126' }) });
-  }, [showHelpText]);
-
   const onTracksHelpPress = useCallback(() => {
     showHelpText({ text: i18n.t('Not all formats support all track types, and LosslessCut is unable to properly cut some track types, so you may have to sacrifice some tracks by disabling them in order to get correct result.') });
   }, [showHelpText]);
@@ -317,18 +293,6 @@ function ExportConfirm({
   const onExportModeHelpPress = useCallback(() => {
     showHelpText({ text: exportModeDescription });
   }, [exportModeDescription, showHelpText]);
-
-  const onAvoidNegativeTsHelpPress = useCallback(() => {
-    // https://ffmpeg.org/ffmpeg-all.html#Format-Options
-    // https://github.com/mifi/lossless-cut/issues/1206
-    const texts = {
-      make_non_negative: i18n.t('Shift timestamps to make them non-negative. Also note that this affects only leading negative timestamps, and not non-monotonic negative timestamps.'),
-      make_zero: i18n.t('Shift timestamps so that the first timestamp is 0. (LosslessCut default)'),
-      auto: i18n.t('Enables shifting when required by the target format.'),
-      disabled: i18n.t('Disables shifting of timestamp.'),
-    };
-    showHelpText({ text: `${avoidNegativeTs}: ${texts[avoidNegativeTs]}` });
-  }, [avoidNegativeTs, showHelpText]);
 
   const onCutFromAdjustmentFramesHelpPress = useCallback(() => {
     showHelpText({ text: i18n.t('This option allows you to shift all segment start times forward by one or more frames before cutting. This can be useful if the output video starts from the wrong (preceding) keyframe.') });
@@ -601,77 +565,47 @@ function ExportConfirm({
                 </>
               )}
 
-              {areWeCutting && (
+              {exportInfo.encodeCount > 0 && (
                 <>
                   <AnimatedTr>
                     <td>
-                      {t('Smart cut (experimental):')}
-                      {renderNotice(notices.specific['smartCut'])}
+                      {t('Smart cut quality (CRF)')}
                     </td>
                     <td>
-                      <Switch checked={enableSmartCut} onCheckedChange={() => setEnableSmartCut((v) => !v)} />
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+                        <TextInput value={smartCutCrf} onChange={handleSmartCutCrfChange} style={{ width: '4em', flexGrow: 0, marginRight: '.3em' }} />
+                      </div>
                     </td>
-                    <td>
-                      {renderNoticeIcon(notices.specific['smartCut'], rightIconStyle) ?? <HelpIcon onClick={onSmartCutHelpPress} />}
-                    </td>
+                    <td />
                   </AnimatedTr>
 
-                  {isEncoding && (
-                    <>
-                      <AnimatedTr>
-                        <td>
-                          {t('Smart cut quality (CRF)')}
-                        </td>
-                        <td>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
-                            <TextInput value={smartCutCrf} onChange={handleSmartCutCrfChange} style={{ width: '4em', flexGrow: 0, marginRight: '.3em' }} />
-                          </div>
-                        </td>
-                        <td />
-                      </AnimatedTr>
-
-                      <AnimatedTr>
-                        <td>
-                          {t('Smart cut encoding speed')}
-                        </td>
-                        <td>
-                          <Select value={smartCutPreset} onChange={(e) => setSmartCutPreset(e.target.value as SmartCutPreset)} style={{ height: 20, marginLeft: 5 }}>
-                            <option value="veryslow">veryslow</option>
-                            <option value="slower">slower</option>
-                            <option value="slow">slow</option>
-                            <option value="medium">medium</option>
-                          </Select>
-                        </td>
-                        <td />
-                      </AnimatedTr>
-
-                      <AnimatedTr>
-                        <td>
-                          {t('Force fix concat error')}
-                        </td>
-                        <td>
-                          <Switch checked={forceFixConcat} onCheckedChange={() => setForceFixConcat((v) => !v)} />
-                        </td>
-                        <td />
-                      </AnimatedTr>
-                    </>
-                  )}
-
-                  {!isEncoding && (
-                    <AnimatedTr>
-                      <td>
-                        {t('Keyframe cut mode')}
-                        {renderNotice(notices.specific['cutMode'])}
-                      </td>
-                      <td>
-                        <Switch checked={keyframeCut} onCheckedChange={() => toggleKeyframeCut()} />
-                      </td>
-                      <td>
-                        {renderNoticeIcon(notices.specific['cutMode'], rightIconStyle) ?? <HelpIcon onClick={onKeyframeCutHelpPress} />}
-                      </td>
-                    </AnimatedTr>
-                  )}
+                  <AnimatedTr>
+                    <td>
+                      {t('Smart cut encoding speed')}
+                    </td>
+                    <td>
+                      <Select value={smartCutPreset} onChange={(e) => setSmartCutPreset(e.target.value as SmartCutPreset)} style={{ height: 20, marginLeft: 5 }}>
+                        <option value="veryslow">veryslow</option>
+                        <option value="slower">slower</option>
+                        <option value="slow">slow</option>
+                        <option value="medium">medium</option>
+                      </Select>
+                    </td>
+                    <td />
+                  </AnimatedTr>
                 </>
+              )}
+
+              {exportInfo.concatCount > 0 && (
+                <AnimatedTr>
+                  <td>
+                    {t('Force fix concat error')}
+                  </td>
+                  <td>
+                    <Switch checked={forceFixConcat} onCheckedChange={() => setForceFixConcat((v) => !v)} />
+                  </td>
+                  <td />
+                </AnimatedTr>
               )}
 
               {lossyMode != null && (
@@ -684,26 +618,6 @@ function ExportConfirm({
                     <div>{lossyMode.videoEncoder}</div>
                   </td>
                   <td />
-                </AnimatedTr>
-              )}
-
-              {!isEncoding && (
-                <AnimatedTr>
-                  <td>
-                    &quot;ffmpeg&quot; <code className="highlighted">avoid_negative_ts</code>
-                    {renderNotice(notices.specific['avoidNegativeTs'])}
-                  </td>
-                  <td>
-                    <Select value={avoidNegativeTs} onChange={(e) => setAvoidNegativeTs(e.target.value as AvoidNegativeTs)} style={{ height: 20, marginLeft: 5 }}>
-                      <option value={'auto' satisfies AvoidNegativeTs}>auto</option>
-                      <option value={'make_zero' satisfies AvoidNegativeTs}>make_zero</option>
-                      <option value={'make_non_negative' satisfies AvoidNegativeTs}>make_non_negative</option>
-                      <option value={'disabled' satisfies AvoidNegativeTs}>disabled</option>
-                    </Select>
-                  </td>
-                  <td>
-                    {renderNoticeIcon(notices.specific['avoidNegativeTs'], rightIconStyle) ?? <HelpIcon onClick={onAvoidNegativeTsHelpPress} />}
-                  </td>
                 </AnimatedTr>
               )}
 
@@ -726,6 +640,23 @@ function ExportConfirm({
                 <td>
                   <IoIosSettings size={24} role="button" onClick={toggleSettings} style={{ marginLeft: 5 }} />
                 </td>
+                <td />
+              </AnimatedTr>
+
+              <AnimatedTr>
+                <td>
+                  预计{' '}
+                  <span style={{ color: exportInfo.copyCount > 0 ? '#34d399' : undefined }}>
+                    复制 {exportInfo.copyCount} 次，
+                  </span>
+                  <span style={{ color: exportInfo.encodeCount > 0 ? '#34d399' : undefined }}>
+                    重编码 {exportInfo.encodeCount} 次，
+                  </span>
+                  <span style={{ color: exportInfo.concatCount > 0 ? '#34d399' : undefined }}>
+                    合并 {exportInfo.concatCount} 次
+                  </span>
+                </td>
+                <td />
                 <td />
               </AnimatedTr>
             </>

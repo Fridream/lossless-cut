@@ -56,7 +56,7 @@ import type {
   FileFfprobeMeta } from './ffmpeg';
 import {
   getStreamFps, isCuttingStart, isCuttingEnd,
-  readFileFfprobeMeta, getDefaultOutFormat,
+  readFileFfprobeMeta, readFramesAroundTime, getDefaultOutFormat,
   setCustomFfPath as ffmpegSetCustomFfPath,
   isIphoneHevc, isProblematicAvc1, tryMapChaptersToEdl,
   getTimecodeFromStreams, createChaptersFromSegments,
@@ -97,11 +97,12 @@ import { rightBarWidth, leftBarWidth, ffmpegExtractWindow, zoomMax } from './uti
 import BigWaveform from './components/BigWaveform';
 import CropSelector from './components/CropSelector';
 
-import type { BatchFile, Chapter, CropArea, CropStatus, EdlExportType, EdlFileType, EdlImportType, FfmpegCommandLog, FilesMeta, FileStats, ParamsByFile, PlaybackMode, SegmentBase, SegmentColorIndex, SegmentTags, StateSegment, TunerType } from './types';
+import type { BatchFile, Chapter, CropArea, CropStatus, EdlExportType, EdlFileType, EdlImportType, FfmpegCommandLog, FilesMeta, FileStats, ParamsByFile, PlaybackMode, SegmentBase, SegmentColorIndex, SegmentOpType, SegmentTags, StateSegment, TunerType } from './types';
 import { goToTimecodeDirectArgsSchema, openFilesActionArgsSchema } from './types';
 import type { CaptureFormat, KeyboardAction, ApiActionRequest, SmartCutPreset } from '../../common/types.js';
 import type { FFprobeChapter, FFprobeStream } from '../../common/ffprobe.js';
 import { parseFfprobeDuration } from '../../common/util.js';
+import { needsSmartCut } from './smartcut.js';
 
 import useLoading from './hooks/useLoading';
 import useVideo from './hooks/useVideo';
@@ -189,7 +190,7 @@ function App() {
   const [selectedBatchFiles, setSelectedBatchFiles] = useState<string[]>([]);
 
   const allUserSettings = useUserSettingsRoot();
-  const { captureFormat, keyframeCut, preserveMetadata, preserveMetadataOnMerge, preserveMovData, preserveChapters, movFastStart, avoidNegativeTs, autoMerge, timecodeFormat, invertCutSegments, autoExportExtraStreams, askBeforeClose, enableImportChapters, enableAskForFileOpenAction, playbackVolume, autoSaveProjectFile, wheelSensitivity, waveformHeight, invertTimelineScroll, language, ffmpegExperimental, hideNotifications, hideOsNotifications, autoLoadTimecode, autoDeleteMergedSegments, exportConfirmEnabled, segmentsToChapters, simpleMode, cutFileTemplate, cutMergedFileTemplate, mergedFileTemplate, keyboardSeekAccFactor, keyboardNormalSeekSpeed, keyboardSeekSpeed2, keyboardSeekSpeed3, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart, outFormatLocked, safeOutputFileName, enableAutoHtml5ify, segmentsToChaptersOnly, keyBindings, enableSmartCut, customFfPath, storeProjectInWorkingDir, enableOverwriteOutput, mouseWheelZoomModifierKey, mouseWheelFrameSeekModifierKey, mouseWheelKeyframeSeekModifierKey, captureFrameMethod, captureFrameQuality, captureFrameFileNameFormat, enableNativeHevc, cleanupChoices, darkMode, preferStrongColors, outputFileNameMinZeroPadding, cutFromAdjustmentFrames, cutToAdjustmentFrames, waveformMode: waveformModePreference, thumbnailsEnabled, keyframesEnabled, reducedMotion, ffmpegHwaccel } = allUserSettings.settings;
+  const { captureFormat, preserveMetadata, preserveMetadataOnMerge, preserveMovData, preserveChapters, movFastStart, autoMerge, timecodeFormat, invertCutSegments, autoExportExtraStreams, askBeforeClose, enableImportChapters, enableAskForFileOpenAction, playbackVolume, autoSaveProjectFile, wheelSensitivity, waveformHeight, invertTimelineScroll, language, ffmpegExperimental, hideNotifications, hideOsNotifications, autoLoadTimecode, autoDeleteMergedSegments, exportConfirmEnabled, segmentsToChapters, simpleMode, cutFileTemplate, cutMergedFileTemplate, mergedFileTemplate, keyboardSeekAccFactor, keyboardNormalSeekSpeed, keyboardSeekSpeed2, keyboardSeekSpeed3, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart, outFormatLocked, safeOutputFileName, enableAutoHtml5ify, segmentsToChaptersOnly, keyBindings, customFfPath, storeProjectInWorkingDir, enableOverwriteOutput, mouseWheelZoomModifierKey, mouseWheelFrameSeekModifierKey, mouseWheelKeyframeSeekModifierKey, captureFrameMethod, captureFrameQuality, captureFrameFileNameFormat, enableNativeHevc, cleanupChoices, darkMode, preferStrongColors, outputFileNameMinZeroPadding, cutFromAdjustmentFrames, cutToAdjustmentFrames, waveformMode: waveformModePreference, thumbnailsEnabled, keyframesEnabled, reducedMotion, ffmpegHwaccel } = allUserSettings.settings;
   const { setCaptureFormat, setCustomOutDir, setKeyframeCut, setPlaybackVolume, setExportConfirmEnabled, setSimpleMode, setOutFormatLocked, setSafeOutputFileName, setKeyBindings, resetKeyBindings, setStoreProjectInWorkingDir, setCleanupChoices, toggleDarkMode, setWaveformMode, setThumbnailsEnabled, setKeyframesEnabled, prefersReducedMotion, customOutDir } = allUserSettings;
 
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(!simpleMode);
@@ -683,13 +684,39 @@ function App() {
   const shouldShowKeyframes = keyframesEnabled && hasVideo && calcShouldShowKeyframes(zoomedDuration);
   const shouldShowWaveform = calcShouldShowWaveform(zoomedDuration) || overviewWaveform != null;
 
-  const areWeCutting = useMemo(() => segmentsToExport.some(({ start, end }) => isCuttingStart(start) || isCuttingEnd(end, fileDuration)), [fileDuration, segmentsToExport]);
-  const needSmartCut = areWeCutting && enableSmartCut;
-  const isEncoding = needSmartCut || lossyMode != null;
+  const areWeCutting = useMemo(() => segmentsToExport.some(({ start, end, cropArea }) => isCuttingStart(start) || isCuttingEnd(end, fileDuration) || cropArea), [fileDuration, segmentsToExport]);
+  const getSegmentOpType = useCallback(async (segment: { start: number, end?: number | undefined, cropArea?: CropArea | undefined }): Promise<SegmentOpType> => {
+    if (!filePath || !mainVideoStream || segment.end == null) return ''; if (lossyMode || segment.cropArea) return '全重编';
+    let frames = await readFramesAroundTime({ filePath, streamIndex: mainVideoStream.index, aroundTime: segment.start, window: 3 }); let minNearTime = 3; let minNearFrame;
+    for (const frame of frames) if (Math.abs(frame.time - segment.start) < minNearTime) { minNearTime = Math.abs(frame.time - segment.start); minNearFrame = frame; }
+    const exactCutFrom = minNearFrame!.time;
+    frames = await readFramesAroundTime({ filePath, streamIndex: mainVideoStream.index, aroundTime: segment.end, window: 3 }); minNearTime = 3; minNearFrame = undefined;
+    for (const frame of frames) if (Math.abs(frame.time - segment.end) < minNearTime) { minNearTime = Math.abs(frame.time - segment.end); minNearFrame = frame; }
+    const exactCutTo = isCuttingEnd(segment.end, fileDuration) ? minNearFrame!.time : fileDuration!;
+    const { losslessCutFrom, losslessCutTo, losslessCutToPTS } = await needsSmartCut({ path: filePath, exactCutFrom, exactCutTo, fileDuration, videoStream: mainVideoStream });
+    if (losslessCutTo == null) return '全重编'; if (losslessCutFrom == null && losslessCutToPTS == null) return '全复制';
+    if (losslessCutFrom == null) return '尾重编'; if (losslessCutToPTS == null) return '头重编'; return '双重编';
+  }, [filePath, fileDuration, mainVideoStream]);
+  const [exportInfo, setExportInfo] = useState({ copyCount: 1, encodeCount: 0, concatCount: 0 });
+  useEffect(() => {
+    Promise.all(segmentsToExport.map((segment) => getSegmentOpType(segment))).then((segmentsOpType) => {
+      if (segmentsOpType.length === 0) { setExportInfo({ copyCount: 1, encodeCount: 0, concatCount: 0 }); return; }
+      let copyCount = 0; let encodeCount = 0; let concatCount = 0;
+      for (const segmentOpType of segmentsOpType) {
+        switch (segmentOpType) {
+          case '全复制': { copyCount += 1; break; }
+          case '全重编': { encodeCount += 1; break; }
+          case '头重编': { copyCount += 1; encodeCount += 1; concatCount += 1; break; }
+          case '尾重编': { copyCount += 1; encodeCount += 1; concatCount += 1; break; }
+          case '双重编': { copyCount += 1; encodeCount += 2; concatCount += 1; break; }
+        }
+      } setExportInfo({ copyCount, encodeCount, concatCount });
+    });
+  }, [segmentsToExport, getSegmentOpType]);
 
   const {
     concatFiles, html5ifyDummy, cutMultiple, concatCutSegments, html5ify, fixInvalidDuration, decimate, extractStreams, tryDeleteFiles,
-  } = useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart, isEncoding, lossyMode, enableOverwriteOutput, outputPlaybackRate, cutFromAdjustmentFrames, cutToAdjustmentFrames, appendLastCommandsLog, appendFfmpegCommandLog, ffmpegHwaccel, smartCutCrf, smartCutPreset, forceFixConcat });
+  } = useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart, lossyMode, enableOverwriteOutput, outputPlaybackRate, cutFromAdjustmentFrames, cutToAdjustmentFrames, appendLastCommandsLog, appendFfmpegCommandLog, ffmpegHwaccel, smartCutCrf, smartCutPreset, forceFixConcat });
 
   const { previewFilePath, setPreviewFilePath, usingDummyVideo, setUsingDummyVideo, userHtml5ifyCurrentFile, convertFormatBatch, html5ifyAndLoadWithPreferences } = useHtml5ify({
     filePath, hasVideo, hasAudio, workingRef, setWorking, ensureWritableOutDir, customOutDir, batchFiles, enableAutoHtml5ify, setProgress, html5ify, html5ifyDummy, withErrorHandling, showGenericDialog,
@@ -1197,7 +1224,6 @@ function App() {
         rotation: isRotationSet ? effectiveRotation : undefined,
         copyFileStreams,
         allFilesMeta,
-        keyframeCut,
         segments: segmentsToExport,
         cutFileNames,
         onProgress: setProgress,
@@ -1208,7 +1234,6 @@ function App() {
         preserveMovData,
         preserveChapters,
         movFastStart,
-        avoidNegativeTs,
         paramsByFile,
         chapters: chaptersToAdd,
       });
@@ -1334,7 +1359,7 @@ function App() {
       setWorking(undefined);
       setProgress(undefined);
     }
-  }, [filePath, numStreamsToCopy, haveInvalidSegs, workingRef, setWorking, segmentsToChaptersOnly, cutFileTemplateOrDefault, generateCutFileNames, cutMultiple, outputDir, customOutDir, fileFormat, fileDuration, isRotationSet, effectiveRotation, copyFileStreams, allFilesMeta, keyframeCut, segmentsToExport, shortestFlag, ffmpegExperimental, preserveMetadata, preserveMetadataOnMerge, preserveMovData, preserveChapters, movFastStart, avoidNegativeTs, paramsByFile, willMerge, enableOverwriteOutput, exportConfirmEnabled, mainFileFormat, mainStreams, exportExtraStreams, areWeCutting, simpleMode, prefersReducedMotion, cleanupChoices, hideAllNotifications, segmentsOrInverse.selected, t, cutMergedFileTemplateOrDefault, segmentsToChapters, invertCutSegments, generateCutMergedFileNames, concatCutSegments, autoDeleteMergedSegments, tryDeleteFiles, nonCopiedExtraStreams, extractStreams, askForCleanupChoices, cleanupFiles, showOsNotification, openCutFinishedDialog, handleExportFailed]);
+  }, [filePath, numStreamsToCopy, haveInvalidSegs, workingRef, setWorking, segmentsToChaptersOnly, cutFileTemplateOrDefault, generateCutFileNames, cutMultiple, outputDir, customOutDir, fileFormat, fileDuration, isRotationSet, effectiveRotation, copyFileStreams, allFilesMeta, segmentsToExport, shortestFlag, ffmpegExperimental, preserveMetadata, preserveMetadataOnMerge, preserveMovData, preserveChapters, movFastStart, paramsByFile, willMerge, enableOverwriteOutput, exportConfirmEnabled, mainFileFormat, mainStreams, exportExtraStreams, areWeCutting, simpleMode, prefersReducedMotion, cleanupChoices, hideAllNotifications, segmentsOrInverse.selected, t, cutMergedFileTemplateOrDefault, segmentsToChapters, invertCutSegments, generateCutMergedFileNames, concatCutSegments, autoDeleteMergedSegments, tryDeleteFiles, nonCopiedExtraStreams, extractStreams, askForCleanupChoices, cleanupFiles, showOsNotification, openCutFinishedDialog, handleExportFailed]);
 
   const onExportPress = useCallback(async () => {
     if (!filePath) return;
@@ -2749,6 +2774,7 @@ function App() {
                         setEditingSegmentTagsSegmentIndex={setEditingSegmentTagsSegmentIndex}
                         onEditSegmentTags={onEditSegmentTags}
                         getSegEstimatedSize={getSegEstimatedSize}
+                        getSegmentOpType={getSegmentOpType}
                       />
                     )}
                   </AnimatePresence>
@@ -2851,7 +2877,7 @@ function App() {
 
                 {/* Dialogs */}
 
-                <ExportConfirm areWeCutting={areWeCutting} segmentsOrInverse={segmentsOrInverse} segmentsToExport={segmentsToExport} willMerge={willMerge} visible={exportConfirmOpen} onClosePress={closeExportConfirm} onExportConfirm={onExportConfirm} renderOutFmt={renderOutFmt} outputDir={outputDir} numStreamsTotal={numStreamsTotal} numStreamsToCopy={numStreamsToCopy} onShowStreamsSelectorClick={handleShowStreamsSelectorClick} outFormat={fileFormat} cutFileTemplate={cutFileTemplateOrDefault} cutMergedFileTemplate={cutMergedFileTemplateOrDefault} generateCutFileNames={generateCutFileNames} generateCutMergedFileNames={generateCutMergedFileNames} currentSegIndexSafe={currentSegIndexSafe} mainCopiedThumbnailStreams={mainCopiedThumbnailStreams} needSmartCut={needSmartCut} isEncoding={isEncoding} toggleSettings={toggleSettings} outputPlaybackRate={outputPlaybackRate} lossyMode={lossyMode} neighbouringKeyFrames={neighbouringKeyFrames} findNearestKeyFrameTime={findNearestKeyFrameTime} smartCutCrf={smartCutCrf} setSmartCutCrf={setSmartCutCrf} smartCutPreset={smartCutPreset} setSmartCutPreset={setSmartCutPreset} forceFixConcat={forceFixConcat} setForceFixConcat={setForceFixConcat} />
+                <ExportConfirm areWeCutting={areWeCutting} segmentsOrInverse={segmentsOrInverse} segmentsToExport={segmentsToExport} willMerge={willMerge} visible={exportConfirmOpen} onClosePress={closeExportConfirm} onExportConfirm={onExportConfirm} renderOutFmt={renderOutFmt} outputDir={outputDir} numStreamsTotal={numStreamsTotal} numStreamsToCopy={numStreamsToCopy} onShowStreamsSelectorClick={handleShowStreamsSelectorClick} outFormat={fileFormat} cutFileTemplate={cutFileTemplateOrDefault} cutMergedFileTemplate={cutMergedFileTemplateOrDefault} generateCutFileNames={generateCutFileNames} generateCutMergedFileNames={generateCutMergedFileNames} currentSegIndexSafe={currentSegIndexSafe} mainCopiedThumbnailStreams={mainCopiedThumbnailStreams} toggleSettings={toggleSettings} outputPlaybackRate={outputPlaybackRate} lossyMode={lossyMode} neighbouringKeyFrames={neighbouringKeyFrames} findNearestKeyFrameTime={findNearestKeyFrameTime} smartCutCrf={smartCutCrf} setSmartCutCrf={setSmartCutCrf} smartCutPreset={smartCutPreset} setSmartCutPreset={setSmartCutPreset} forceFixConcat={forceFixConcat} setForceFixConcat={setForceFixConcat} exportInfo={exportInfo} />
 
                 <Dialog.Root open={streamsSelectorShown} onOpenChange={setStreamsSelectorShown}>
                   <Dialog.Portal>
