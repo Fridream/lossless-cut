@@ -2,7 +2,7 @@
 export const maxSegmentsAllowed = 2000;
 
 /** Size of the window to extract keyframes/waveforms */
-export const ffmpegExtractWindow = 60;
+export const ffmpegExtractWindow = 120;
 
 export const zoomMax = 2 ** 14;
 

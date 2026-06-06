@@ -121,7 +121,7 @@ const Segment = memo(({
 
       { label: t('Add segment'), click: addSegment },
       { label: t('Label segment'), click: () => onLabelPress(index) },
-      { label: t('Remove segment'), click: () => onRemovePress(index) },
+      { label: t('Remove segment'), click: () => onRemovePress(index, true) },
       { label: t('Duplicate segment'), click: () => onDuplicateSegmentClick(seg) },
 
       { type: 'separator' },

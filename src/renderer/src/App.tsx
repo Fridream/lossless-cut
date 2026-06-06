@@ -207,7 +207,7 @@ function App() {
   const keyBindingByAction = useMemo(() => Object.fromEntries(keyBindings.map((binding) => [binding.action, binding])), [keyBindings]);
 
   const { working, setWorking, workingRef, abortWorking } = useLoading();
-  const { videoRef, videoContainerRef, playbackRate, setPlaybackRate, outputPlaybackRate, setOutputPlaybackRate, commandedTime, seekAbs, playingRef, getRelevantTime, setPlaying, onSeeked, relevantTime, onStartPlaying, setCommandedTime, setOutputPlaybackRateState, commandedTimeRef, onStopPlaying, onVideoAbort, playerTime, setPlayerTime, playbackMode, setPlaybackMode, playbackModeRef, playing, play, pause, seekRel } = useVideo({ filePath });
+  const { videoRef, videoContainerRef, playbackRate, setPlaybackRate, outputPlaybackRate, setOutputPlaybackRate, commandedTime, seekAbs, playingRef, getRelevantTime, setPlaying, onSeeked, relevantTime, onStartPlaying, setCommandedTime, setOutputPlaybackRateState, commandedTimeRef, onStopPlaying, onVideoAbort, playerTime, setPlayerTime, playbackMode, setPlaybackMode, playbackModeRef, playing, play, pause, seekRel, onRateChange } = useVideo({ filePath });
   const { timecodePlaceholder, formatTimecode, parseTimecode, getFrameCount, promptTimecode } = useTimecode({ detectedFps, timecodeFormat, showGenericDialog });
   const { loadSubtitle, subtitlesByStreamId, setSubtitlesByStreamId } = useSubtitles();
 
@@ -2679,6 +2679,7 @@ function App() {
                           onDoubleClick={isCropSelecting ? undefined : toggleFullscreenVideo}
                           onFocusCapture={onVideoFocus}
                           onSeeked={onSeeked}
+                          onRateChange={onRateChange}
                         >
                           {renderSubtitles()}
                         </video>

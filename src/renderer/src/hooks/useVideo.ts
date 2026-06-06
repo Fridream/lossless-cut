@@ -1,7 +1,8 @@
 import type { ReactEventHandler } from 'react';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChromiumHTMLVideoElement, PlaybackMode } from '../types';
 import { showPlaybackFailedMessage } from '../swal';
+import { ffmpegExtractWindow } from '../util/constants';
 
 export default ({ filePath }: { filePath: string | undefined }) => {
   const [commandedTime, setCommandedTimeRaw] = useState(0);
@@ -60,11 +61,26 @@ export default ({ filePath }: { filePath: string | undefined }) => {
   }, []);
 
   const commandedTimeRef = useRef(commandedTime);
+  const playingRefreshIntervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined); // 用于自动触发附近帧读取
+
+  const setCommandedTimeIn = useCallback((t: number) => {
+    commandedTimeRef.current = t;
+    setCommandedTimeRaw(t);
+  }, []);
+
+  const resetPlayingRefreshIntervalRef = useCallback((create?: boolean) => {
+    const renew = create ?? !!playingRefreshIntervalRef.current; clearInterval(playingRefreshIntervalRef.current); playingRefreshIntervalRef.current = undefined;
+    const delay = (ffmpegExtractWindow * (videoRef.current?.playbackRate ?? 1) * 1000) / 4;
+    if (renew) playingRefreshIntervalRef.current = setInterval(() => videoRef.current && setCommandedTimeIn(videoRef.current.currentTime), delay);
+  }, [setCommandedTimeIn]);
+  useEffect(() => () => resetPlayingRefreshIntervalRef(false), [filePath, resetPlayingRefreshIntervalRef]);
 
   const setCommandedTime = useCallback((t: number) => {
     commandedTimeRef.current = t;
     setCommandedTimeRaw(t);
-  }, []);
+    resetPlayingRefreshIntervalRef();
+  }, [resetPlayingRefreshIntervalRef]);
+  const onRateChange = useCallback(() => videoRef.current && setCommandedTime(videoRef.current.currentTime), [setCommandedTime]);
 
   const seekAbs = useCallback((val: number | undefined) => {
     if (filePath == null) return;
@@ -90,10 +106,11 @@ export default ({ filePath }: { filePath: string | undefined }) => {
   const onPlayingChange = useCallback((val: boolean) => {
     playingRef.current = val;
     setPlaying(val);
+    resetPlayingRefreshIntervalRef(val);
     if (!val && videoRef.current) {
-      setCommandedTime(videoRef.current.currentTime);
+      setCommandedTimeIn(videoRef.current.currentTime);
     }
-  }, [setCommandedTime]);
+  }, [setCommandedTimeIn, resetPlayingRefreshIntervalRef]);
 
   const onStopPlaying = useCallback(() => {
     onPlayingChange(false);
@@ -159,5 +176,6 @@ export default ({ filePath }: { filePath: string | undefined }) => {
     playbackModeRef,
     playerTime,
     setPlayerTime,
+    onRateChange,
   };
 };
