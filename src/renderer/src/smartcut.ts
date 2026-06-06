@@ -1,49 +1,49 @@
-import i18n from 'i18next';
-
 import { getRealVideoStreams, getVideoTimebase } from './util/streams';
 
-import { readKeyframesAroundTime, findNextKeyframe, findKeyframeAtExactTime } from './ffmpeg';
+import { readFramesAroundTime, readKeyframesAroundTime, findNextKeyframe } from './ffmpeg';
 import type { FFprobeStream } from '../../common/ffprobe';
-import { UserFacingError } from '../errors';
 import { readFileSize } from './util';
 
 
 const mapVideoCodec = (codec: string) => ({ av1: 'libsvtav1' }[codec] ?? codec);
 
-export async function needsSmartCut({ path, desiredCutFrom, videoStream }: {
+export async function needsSmartCut({ path, exactCutFrom, exactCutTo, fileDuration, videoStream }: {
   path: string,
-  desiredCutFrom: number,
+  exactCutFrom: number,
+  exactCutTo: number,
+  fileDuration: number | undefined,
   videoStream: Pick<FFprobeStream, 'index'>,
 }) {
-  const readKeyframes = async (window: number) => readKeyframesAroundTime({ filePath: path, streamIndex: videoStream.index, aroundTime: desiredCutFrom, window });
+  let losslessCutFrom; // 有值时表示需要头smart cut，作为头编码的尾点，中/尾复制的起点
+  let losslessCutTo; // 无值时表示需要整段重编码，有值时作为头/中复制的尾点
+  let losslessCutToPTS; // 有值时表示需要尾smart cut，作为尾编码的起点
+  const readFrames = async (aroundTime: number, window: number) => readFramesAroundTime({ filePath: path, streamIndex: videoStream.index, aroundTime, window });
+  const readKeyframes = async (aroundTime: number, window: number) => readKeyframesAroundTime({ filePath: path, streamIndex: videoStream.index, aroundTime, window });
 
-  let keyframes = await readKeyframes(10);
-
-  const keyframeAtExactTime = findKeyframeAtExactTime(keyframes, desiredCutFrom);
-  if (keyframeAtExactTime) {
-    console.log('Start cut is already on exact keyframe', keyframeAtExactTime.time);
-
-    return {
-      losslessCutFrom: keyframeAtExactTime.time,
-      segmentNeedsSmartCut: false,
-    };
+  // 在最近10s内所有帧里找与切头时间最近的帧，如果是关键帧即头部不用切，否则用之后的且最近的关键帧
+  let frames = await readFrames(exactCutFrom, 10); let keyFrames; let selectedFrame; let keyFrame;
+  for (const frame of frames) { if (frame.time === exactCutFrom) selectedFrame = frame; if (frame.keyframe && frame.time >= exactCutFrom) { keyFrame = frame; break; } }
+  if (selectedFrame?.keyframe) console.log('Start cut is already on exact keyframe', selectedFrame.time, selectedFrame);
+  else {
+    if (!keyFrame) { keyFrames = await readKeyframes(exactCutFrom, 60); keyFrame = findNextKeyframe(keyFrames, exactCutFrom); }
+    // 找不到下一个关键帧时或者切尾在下一个关键帧前时直接整段重编码
+    if (!keyFrame || keyFrame.time >= exactCutTo) return { losslessCutFrom, losslessCutTo, losslessCutToPTS };
+    console.log('Smart cut from keyframe', { keyframe: keyFrame.time, exactCutFrom });
+    losslessCutFrom = keyFrame.time;
   }
 
-  let nextKeyframe = findNextKeyframe(keyframes, desiredCutFrom);
-
-  if (nextKeyframe == null) {
-    // try again with a larger window
-    keyframes = await readKeyframes(60);
-    nextKeyframe = findNextKeyframe(keyframes, desiredCutFrom);
+  if (fileDuration === exactCutTo) return { losslessCutFrom, losslessCutTo: fileDuration, losslessCutToPTS };
+  // 在附近3s找安全点，使得最后得包含的那一帧DTS时间小于最前不应该包含的那一帧DTS时间，以此作为DTS实际切割尾点
+  // 找不到安全点时直接整段重编码，正常情况下10帧内必有安全点
+  const copyHead = losslessCutFrom ?? exactCutFrom; frames = await readFrames(exactCutTo, 3); selectedFrame = undefined;
+  for (const frame of frames) if (frame.time === exactCutTo) { selectedFrame = frame; break; }
+  for (const frame of frames.filter((f) => f.time <= selectedFrame!.time && f.time > copyHead).sort((a, b) => b.time - a.time)) {
+    const minDtsAfterFrame = frames.filter((f) => f.time >= frame.time).reduce((min, f) => (f.DTSTime < min.DTSTime ? f : min));
+    const maxDtsBeforeFrame = frames.filter((f) => f.time < frame.time).reduce((max, f) => (f.DTSTime > max.DTSTime ? f : max));
+    const minDtsAfter = minDtsAfterFrame.DTSTime; const maxDtsBefore = maxDtsBeforeFrame.DTSTime;
+    if (maxDtsBefore < minDtsAfter) { losslessCutTo = minDtsAfter; if (frame !== selectedFrame) losslessCutToPTS = frame.time; break; }
   }
-  if (nextKeyframe == null) throw new UserFacingError(i18n.t('Cannot find any keyframe after the desired start cut point'));
-
-  console.log('Smart cut from keyframe', { keyframe: nextKeyframe.time, desiredCutFrom });
-
-  return {
-    losslessCutFrom: nextKeyframe.time,
-    segmentNeedsSmartCut: true,
-  };
+  return { losslessCutFrom, losslessCutTo, losslessCutToPTS };
 }
 
 // eslint-disable-next-line import/prefer-default-export

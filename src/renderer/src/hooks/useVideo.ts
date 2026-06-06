@@ -37,10 +37,11 @@ export default ({ filePath }: { filePath: string | undefined }) => {
   const seekToRef = useRef<number>(undefined);
 
   const smoothSeek = useCallback((seekTo: number) => {
+    const adjustSeekTo = seekTo + 0.01;
     if (seekingRef.current) {
-      seekToRef.current = seekTo;
+      seekToRef.current = adjustSeekTo;
     } else {
-      videoRef.current!.currentTime = seekTo;
+      videoRef.current!.currentTime = adjustSeekTo;
       // safety precaution:
       seekingRef.current = setTimeout(() => {
         seekingRef.current = undefined;
