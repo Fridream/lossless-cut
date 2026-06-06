@@ -38,6 +38,13 @@ export const llcProjectV1Schema = z.object({
   }).array(),
 });
 
+export const cropAreaSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  w: z.number(),
+  h: z.number(),
+});
+
 export const llcProjectV2Schema = z.object({
   version: z.literal(2),
   mediaFileName: z.string().optional(),
@@ -47,15 +54,28 @@ export const llcProjectV2Schema = z.object({
     name: z.string(),
     tags: segmentTagsSchema.optional(),
     selected: z.boolean().optional(),
+    cropArea: cropAreaSchema.optional(),
   }).array(),
 });
 
 export type LlcProject = z.infer<typeof llcProjectV2Schema>
 
+export interface CropArea {
+  /** Relative X position (0-1) of the crop area's left edge */
+  x: number,
+  /** Relative Y position (0-1) of the crop area's top edge */
+  y: number,
+  /** Relative width (0-1) of the crop area */
+  w: number,
+  /** Relative height (0-1) of the crop area */
+  h: number,
+}
+
 export interface SegmentBase {
   start: number,
   end?: number | undefined,
   name?: string | undefined,
+  cropArea?: CropArea | undefined,
 }
 
 export interface DefiniteSegmentBase {
@@ -73,12 +93,14 @@ export interface StateSegment extends SegmentBase, SegmentColorIndex {
   tags?: SegmentTags | undefined;
   initial?: true,
   selected: boolean,
+  cropArea?: CropArea | undefined,
 }
 
 export interface SegmentToExport extends DefiniteSegmentBase {
   originalIndex: number,
   name?: string | undefined;
   tags?: SegmentTags | undefined;
+  cropArea?: CropArea | undefined,
 }
 
 export interface InverseCutSegment extends DefiniteSegmentBase {
@@ -95,6 +117,8 @@ export type EdlImportType = 'youtube' | EdlFileType;
 export type EdlExportType = 'csv' | 'tsv-human' | 'csv-human' | 'csv-frames' | 'srt' | 'llc';
 
 export type TunerType = 'wheelSensitivity' | 'waveformHeight' | 'keyboardNormalSeekSpeed' | 'keyboardSeekSpeed2' | 'keyboardSeekSpeed3' | 'keyboardSeekAccFactor';
+
+export type CropStatus = 'none' | 'selecting' | 'selected';
 
 export interface WaveformBase {
   createdAt: Date,

@@ -95,8 +95,9 @@ import type { GenerateMergedOutFileNamesParams, GeneratedOutFileNames } from './
 import { generateCutFileNames as generateCutFileNamesRaw, generateCutMergedFileNames as generateCutMergedFileNamesRaw, generateMergedFileNames as generateMergedFileNamesRaw, defaultCutFileTemplate, defaultCutMergedFileTemplate, defaultMergedFileTemplate } from './util/outputNameTemplate';
 import { rightBarWidth, leftBarWidth, ffmpegExtractWindow, zoomMax } from './util/constants';
 import BigWaveform from './components/BigWaveform';
+import CropSelector from './components/CropSelector';
 
-import type { BatchFile, Chapter, EdlExportType, EdlFileType, EdlImportType, FfmpegCommandLog, FilesMeta, FileStats, ParamsByFile, PlaybackMode, SegmentBase, SegmentColorIndex, SegmentTags, StateSegment, TunerType } from './types';
+import type { BatchFile, Chapter, CropArea, CropStatus, EdlExportType, EdlFileType, EdlImportType, FfmpegCommandLog, FilesMeta, FileStats, ParamsByFile, PlaybackMode, SegmentBase, SegmentColorIndex, SegmentTags, StateSegment, TunerType } from './types';
 import { goToTimecodeDirectArgsSchema, openFilesActionArgsSchema } from './types';
 import type { CaptureFormat, KeyboardAction, ApiActionRequest, SmartCutPreset } from '../../common/types.js';
 import type { FFprobeChapter, FFprobeStream } from '../../common/ffprobe.js';
@@ -192,6 +193,7 @@ function App() {
   const { setCaptureFormat, setCustomOutDir, setKeyframeCut, setPlaybackVolume, setExportConfirmEnabled, setSimpleMode, setOutFormatLocked, setSafeOutputFileName, setKeyBindings, resetKeyBindings, setStoreProjectInWorkingDir, setCleanupChoices, toggleDarkMode, setWaveformMode, setThumbnailsEnabled, setKeyframesEnabled, prefersReducedMotion, customOutDir } = allUserSettings;
 
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(!simpleMode);
+  const [isCropSelecting, setIsCropSelecting] = useState(false);
   const [smartCutCrf, setSmartCutCrf] = useState(16);
   const [smartCutPreset, setSmartCutPreset] = useState<SmartCutPreset>('veryslow');
   const [forceFixConcat, setForceFixConcat] = useState(true);
@@ -260,11 +262,7 @@ function App() {
 
   const hideAllNotifications = hideNotifications === 'all';
 
-  const showNotification = useCallback((opts: SweetAlertOptions) => {
-    if (!hideAllNotifications) {
-      getSwal().toast.fire(opts);
-    }
-  }, [hideAllNotifications]);
+  const showNotification = useCallback((opts: SweetAlertOptions) => getSwal().toast.fire(opts), []);
 
   const showOsNotification = useCallback((text: string) => {
     if (hideOsNotifications == null) {
@@ -409,6 +407,103 @@ function App() {
   const jumpCutEnd = useCallback(() => jumpSegEnd(currentSegIndexSafe), [currentSegIndexSafe, jumpSegEnd]);
   const jumpTimelineStart = useCallback(() => seekAbs(0), [seekAbs]);
   const jumpTimelineEnd = useCallback(() => seekAbs(fileDuration), [fileDuration, seekAbs]);
+
+  // 播放位置是否在当前选中段中，前后添加0.1s误差区
+  const inCurrentCutSeg = useMemo(() => !!(currentCutSeg && relevantTime > currentCutSeg.start - 0.1 && (!currentCutSeg.end || relevantTime < currentCutSeg.end + 0.1)), [currentCutSeg, relevantTime]);
+  // Display crop area: show segment's crop only when not selecting and when in segment range
+  const activeCropArea = useMemo(() => (inCurrentCutSeg ? currentCutSeg?.cropArea : undefined), [inCurrentCutSeg, currentCutSeg]);
+  // 选区状态，用于判断是否应该放大预览以及按钮显示
+  const cropStatus: CropStatus = isCropSelecting ? 'selecting' : (activeCropArea != null ? 'selected' : 'none');
+  const checkCropSegment = useCallback(() => {
+    if (inCurrentCutSeg) return true;
+    showNotification({ title: i18n.t('未知区域'), text: i18n.t('请选择片段或进入片段范围内后再试！'), timer: 3000 });
+    return false;
+  }, [inCurrentCutSeg, showNotification]);
+
+  // 开始/修改选区数据
+  const startCropSelection = useCallback(() => {
+    if (checkCropSegment()) setIsCropSelecting(true);
+  }, [checkCropSegment]);
+  // 结束/恢复选区数据
+  const endCropSelection = useCallback((cropArea: CropArea | null) => {
+    if (checkCropSegment()) {
+      setIsCropSelecting(false); if (cropArea == null) return;
+      updateSegAtIndex(currentSegIndexSafe, { cropArea });
+    }
+  }, [currentSegIndexSafe, updateSegAtIndex, checkCropSegment]);
+  // 取消/清空选区数据
+  const clearCropSelection = useCallback(() => {
+    if (checkCropSegment()) {
+      setIsCropSelecting(false); const cropArea = undefined;
+      updateSegAtIndex(currentSegIndexSafe, { cropArea });
+    }
+  }, [currentSegIndexSafe, updateSegAtIndex, checkCropSegment]);
+
+  const videoStyleWithCrop = useMemo<CSSProperties>(() => {
+    if (cropStatus !== 'selected') return videoStyle;
+    return { width: '100%', height: '100%' };
+  }, [cropStatus]);
+
+  const [videoSize, setVideoSize] = useState({ w: 0, h: 0 });
+  const [videoContainerSize, setVideoContainerSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const videoc = videoRef.current!; const handle = () => setVideoSize({ w: videoc.videoWidth, h: videoc.videoHeight });
+    videoc.addEventListener('loadedmetadata', handle); return () => videoc.removeEventListener('loadedmetadata', handle);
+  }, [videoRef]);
+  useEffect(() => {
+    const container = videoContainerRef.current!; const resizeObserver = new ResizeObserver(() => {
+      const rect = container.getBoundingClientRect(); setVideoContainerSize({ w: rect.width, h: rect.height });
+    }); resizeObserver.observe(container); return () => resizeObserver.disconnect();
+  }, [videoContainerRef]);
+
+  // Compute the video style with crop zoom applied
+  const wrapperStyleWithCrop = useMemo<CSSProperties>(() => {
+    const { w: vw, h: vh } = videoSize; const { w: cw, h: ch } = videoContainerSize;
+    if (cropStatus !== 'selected' || !vw || !vh || !cw || !ch) return { position: 'relative', width: '100%', height: '100%' };
+
+    const cropX = Math.ceil((activeCropArea!.x * vw) / 2) * 2;
+    const cropY = Math.ceil((activeCropArea!.y * vh) / 2) * 2;
+    const cropXe = Math.floor(((activeCropArea!.x + activeCropArea!.w) * vw) / 2) * 2;
+    const cropYe = Math.floor(((activeCropArea!.y + activeCropArea!.h) * vh) / 2) * 2;
+    const cropW = Math.max(2, cropXe - cropX);
+    const cropH = Math.max(2, cropYe - cropY);
+
+    const x = cropX / vw;
+    const y = cropY / vh;
+    const w = cropW / vw;
+    const h = cropH / vh;
+
+    const crossA = cw * vh;
+    const crossB = vw * ch;
+
+    let wr; let hr;
+    if (crossA > crossB) {
+      hr = 1; wr = crossA / crossB;
+    } else {
+      wr = 1; hr = crossB / crossA;
+    }
+
+    const scale = Math.min(wr / w, hr / h);
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+
+    return {
+      position: 'relative',
+      aspectRatio: `${vw} / ${vh}`,
+      maxWidth: '100%',
+      maxHeight: '100%',
+      flexShrink: 0,
+      overflow: 'hidden',
+      transformOrigin: `${cx * 100}% ${cy * 100}%`,
+      transform: `translate(${(0.5 - cx) * 100}%, ${(0.5 - cy) * 100}%) scale(${scale})`,
+      clipPath: `polygon(
+        ${x * 100}% ${y * 100}%,
+        ${(x + w) * 100}% ${y * 100}%,
+        ${(x + w) * 100}% ${(y + h) * 100}%,
+        ${x * 100}% ${(y + h) * 100}%
+      )`,
+    };
+  }, [cropStatus, activeCropArea, videoSize, videoContainerSize]);
 
   // const getSafeCutTime = useCallback((cutTime, next) => ffmpeg.getSafeCutTime(neighbouringFrames, cutTime, next), [neighbouringFrames]);
 
@@ -678,6 +773,7 @@ function App() {
     setExportConfirmOpen(false);
     setOutputPlaybackRateState(1);
     setCurrentFileExportCount(0);
+    setIsCropSelecting(false);
   }, [videoRef, setCommandedTime, setPlaybackRate, setPreviewFilePath, setUsingDummyVideo, setPlaying, playingRef, setPlaybackMode, cutSegmentsHistory, setDetectedFileFormat, setCopyStreamIdsByFile, setThumbnails, setSubtitlesByStreamId, setOutputPlaybackRateState]);
 
 
@@ -2190,7 +2286,7 @@ function App() {
     };
   }, []);
 
-  const { keyboardLayoutMap, updateKeyboardLayout } = useKeyboard({ keyBindings, keyUpActions, getKeyboardAction, closeExportConfirm, exportConfirmOpen });
+  const { keyboardLayoutMap, updateKeyboardLayout, cropSelectorHandleRef } = useKeyboard({ keyBindings, keyUpActions, getKeyboardAction, closeExportConfirm, exportConfirmOpen });
 
   useEffect(() => {
     // eslint-disable-next-line unicorn/prefer-add-event-listener
@@ -2512,6 +2608,8 @@ function App() {
                   setStreamsSelectorShown={setStreamsSelectorShown}
                   selectedSegments={segmentsOrInverse.selected}
                   toggleDarkMode={toggleDarkMode}
+                  cropStatus={cropStatus}
+                  onCropClick={{ start: startCropSelection, cancel: clearCropSelection }}
                 />
 
                 <div style={{ flexGrow: 1, display: 'flex', overflowY: 'hidden' }}>
@@ -2537,30 +2635,34 @@ function App() {
                   <div style={{ position: 'relative', flexGrow: 1, overflow: 'hidden' }} ref={videoContainerRef}>
                     {!isFileOpened && <NoFileLoaded mifiLink={mifiLink} currentCutSeg={currentCutSeg} onClick={openFilesDialog} darkMode={darkMode} keyBindingByAction={keyBindingByAction} />}
 
-                    <div className="no-user-select" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, visibility: !isFileOpened || !hasVideo || bigWaveformEnabled ? 'hidden' : undefined }} onWheel={onTimelineWheel}>
-                      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-                      <video
-                        className={styles['video']}
-                        tabIndex={-1}
-                        muted={playbackVolume === 0 || compatPlayerEnabled}
-                        ref={videoRef}
-                        style={videoStyle}
-                        src={fileUri}
-                        onPlay={onStartPlaying}
-                        onPause={onStopPlaying}
-                        onAbort={onVideoAbort}
-                        onDurationChange={onDurationChange}
-                        onTimeUpdate={onTimeUpdate}
-                        onError={onVideoError}
-                        onClick={onVideoClick}
-                        onDoubleClick={toggleFullscreenVideo}
-                        onFocusCapture={onVideoFocus}
-                        onSeeked={onSeeked}
-                      >
-                        {renderSubtitles()}
-                      </video>
+                    <div className="no-user-select" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, visibility: !isFileOpened || !hasVideo || bigWaveformEnabled ? 'hidden' : undefined, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onWheel={onTimelineWheel}>
+                      <div style={wrapperStyleWithCrop}>
+                        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                        <video
+                          className={styles['video']}
+                          tabIndex={-1}
+                          muted={playbackVolume === 0 || compatPlayerEnabled}
+                          ref={videoRef}
+                          style={videoStyleWithCrop}
+                          src={fileUri}
+                          onPlay={onStartPlaying}
+                          onPause={onStopPlaying}
+                          onAbort={onVideoAbort}
+                          onDurationChange={onDurationChange}
+                          onTimeUpdate={onTimeUpdate}
+                          onError={onVideoError}
+                          onClick={isCropSelecting ? undefined : onVideoClick}
+                          onDoubleClick={isCropSelecting ? undefined : toggleFullscreenVideo}
+                          onFocusCapture={onVideoFocus}
+                          onSeeked={onSeeked}
+                        >
+                          {renderSubtitles()}
+                        </video>
 
-                      {filePath != null && compatPlayerEnabled && <MediaSourcePlayer rotate={effectiveRotation} filePath={filePath} videoStream={activeVideoStream} audioStreams={activeAudioStreams} masterVideoRef={videoRef} mediaSourceQuality={mediaSourceQuality} ffmpegHwaccel={ffmpegHwaccel} />}
+                        {isCropSelecting && <CropSelector ref={cropSelectorHandleRef} onCropComplete={endCropSelection} videoRef={videoRef} initialCrop={activeCropArea ?? null} />}
+
+                        {filePath != null && compatPlayerEnabled && <MediaSourcePlayer rotate={effectiveRotation} filePath={filePath} videoStream={activeVideoStream} audioStreams={activeAudioStreams} masterVideoRef={videoRef} mediaSourceQuality={mediaSourceQuality} ffmpegHwaccel={ffmpegHwaccel} />}
+                      </div>
                     </div>
 
                     {bigWaveformEnabled && <BigWaveform waveforms={waveforms} relevantTime={relevantTime} playing={playing} fileDurationNonZero={fileDurationNonZero} zoom={zoomUnrounded} seekRel={seekRel} darkMode={darkMode} />}

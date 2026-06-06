@@ -11,7 +11,7 @@ import { needsSmartCut, getCodecParams } from '../smartcut';
 import { getGuaranteedSegments, isDurationValid } from '../segments';
 import type { FFprobeStream } from '../../../common/ffprobe';
 import type { AvoidNegativeTs, FfmpegHwAccel, Html5ifyMode, PreserveMetadata } from '../../../common/types';
-import { deleteDispositionValue, type AllFilesMeta, type Chapter, type CopyfileStreams, type LiteFFprobeStream, type ParamsByFile, type SegmentToExport } from '../types';
+import { deleteDispositionValue, type AllFilesMeta, type Chapter, type CopyfileStreams, type CropArea, type LiteFFprobeStream, type ParamsByFile, type SegmentToExport } from '../types';
 import type { LossyMode } from '../../../main';
 import { UserFacingError } from '../../errors';
 import mainApi from '../mainApi';
@@ -734,7 +734,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
   }, [appendFfmpegCommandLog, cutFromAdjustmentFrames, cutToAdjustmentFrames, filePath, getOutputPlaybackRateArgs, treatInputFileModifiedTimeAsStart, treatOutputFileModifiedTimeAsStart]);
 
   // inspired by https://gist.github.com/fernandoherreradelasheras/5eca67f4200f1a7cc8281747da08496e
-  const cutEncodeSmartPart = useCallback(async ({ cutFrom, cutTo, outPath, outFormat, videoCodec, videoTimebase, allFilesMeta, copyFileStreams, videoStreamIndex, ffmpegExperimental, hasBFrames }: {
+  const cutEncodeSmartPart = useCallback(async ({ cutFrom, cutTo, outPath, outFormat, videoCodec, videoTimebase, allFilesMeta, copyFileStreams, videoStreamIndex, ffmpegExperimental }: {
     cutFrom: number,
     cutTo: number,
     outPath: string,
@@ -745,7 +745,6 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
     copyFileStreams: CopyfileStreams,
     videoStreamIndex: number,
     ffmpegExperimental: boolean,
-    hasBFrames: number | undefined,
   }) => {
     invariant(filePath != null);
 
@@ -787,7 +786,81 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
 
       ...getVideoTimescaleArgs(videoTimebase),
 
-      ...(hasBFrames ? ['-bf', String(hasBFrames)] : []),
+      ...getExperimentalArgs(ffmpegExperimental),
+
+      '-f', outFormat, '-y', outPath,
+    ];
+
+    appendFfmpegCommandLog(ffmpegArgs);
+    await runFfmpeg(ffmpegArgs);
+  }, [appendFfmpegCommandLog, filePath, smartCutCrf, smartCutPreset]);
+
+  // Re-encode a segment with a crop filter applied
+  const cutEncodeCropSegment = useCallback(async ({ cutFrom, cutTo, outPath, outFormat, cropArea, videoCodec, videoTimebase, allFilesMeta, copyFileStreams, videoStreamIndex, ffmpegExperimental }: {
+    cutFrom: number,
+    cutTo: number,
+    outPath: string,
+    outFormat: string,
+    cropArea: CropArea,
+    videoCodec: string,
+    videoTimebase: number,
+    allFilesMeta: AllFilesMeta,
+    copyFileStreams: CopyfileStreams,
+    videoStreamIndex: number,
+    ffmpegExperimental: boolean,
+  }) => {
+    invariant(filePath != null);
+
+    // Read full ffprobe metadata to get video dimensions
+    const { streams: fullStreams } = await readFileFfprobeMeta(filePath);
+    const videoStreamFull = fullStreams.find((s) => s.codec_type === 'video');
+    invariant(videoStreamFull != null, 'No video stream found');
+
+    const videoWidth = videoStreamFull.width ?? 0;
+    const videoHeight = videoStreamFull.height ?? 0;
+    invariant(videoWidth > 0 && videoHeight > 0, 'Video dimensions unknown');
+
+    // Convert relative crop area to absolute pixel values (must be even for most codecs)
+    // Use ceil for start positions to avoid including content outside the selection
+    // Use floor for end positions to ensure crop stays within selection
+    const cropX = Math.ceil((cropArea.x * videoWidth) / 2) * 2;
+    const cropY = Math.ceil((cropArea.y * videoHeight) / 2) * 2;
+    const cropXe = Math.floor(((cropArea.x + cropArea.w) * videoWidth) / 2) * 2;
+    const cropYe = Math.floor(((cropArea.y + cropArea.h) * videoHeight) / 2) * 2;
+    const cropW = Math.max(2, cropXe - cropX);
+    const cropH = Math.max(2, cropYe - cropY);
+
+    const cropFilter = `crop=${cropW}:${cropH}:${cropX}:${cropY}`;
+    console.log('Applying crop filter:', cropFilter);
+
+    function getVideoArgs({ streamIndex, outputIndex }: { streamIndex: number, outputIndex: number }) {
+      if (streamIndex !== videoStreamIndex) return undefined;
+      return [
+        `-c:${outputIndex}`, videoCodec, '-crf', String(smartCutCrf), '-preset', smartCutPreset,
+      ];
+    }
+
+    const mapStreamsArgs = getMapStreamsArgs({
+      allFilesMeta,
+      copyFileStreams,
+      outFormat,
+      getVideoArgs,
+    });
+
+    const ffmpegArgs = [
+      '-hide_banner',
+      '-ss', formatFfmpegNumber(cutFrom),
+      '-i', filePath,
+      '-ss', '0',
+      '-t', formatFfmpegNumber(cutTo - cutFrom),
+
+      ...mapStreamsArgs,
+
+      '-vf', cropFilter,
+
+      '-ignore_unknown',
+
+      ...getVideoTimescaleArgs(videoTimebase),
 
       ...getExperimentalArgs(ffmpegExperimental),
 
@@ -843,7 +916,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
     // or if enabled, will first cut&encode the part before the next keyframe, trying to match the input file's codec params
     // then it will cut the part *from* the keyframe to "end", and concat them together and return the concated file
     // so that for the calling code it looks as if it's just a normal segment
-    const cutSegment = async ({ start: desiredCutFrom, end: cutTo }: { start: number, end: number }, i: number) => {
+    const cutSegment = async ({ start: desiredCutFrom, end: cutTo, cropArea }: { start: number, end: number, cropArea?: CropArea | undefined }, i: number) => {
       const onProgress = (progress: number) => onSingleProgress(i, progress / 2);
       const onConcatProgress = (progress: number) => onSingleProgress(i, (1 + progress) / 2);
 
@@ -853,7 +926,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
 
       await maybeMkDeepOutDir({ outputDir, fileOutPath: finalOutPath });
 
-      if (!isEncoding) {
+      if (!isEncoding && !cropArea) {
         // simple lossless cut
         invariant(outFormat != null);
         await losslessCutSingle({
@@ -883,6 +956,20 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
         streamIds: streamsToCopyFromMainFile.filter((stream) => stream.index === videoStream.index || stream.codec_type !== 'video').map((stream) => stream.index),
       }];
 
+      // If segment has a crop area, always re-encode with crop filter
+      if (cropArea) {
+        if (await shouldSkipExistingFile(finalOutPath)) return { path: finalOutPath, created: true };
+        invariant(videoCodec != null);
+        invariant(sourceCodecParams.videoBitrate != null);
+        invariant(sourceCodecParams.videoTimebase != null);
+        invariant(filePath != null);
+        invariant(outFormat != null);
+        await cutEncodeCropSegment({
+          cutFrom: desiredCutFrom, cutTo, outPath: finalOutPath, outFormat, cropArea, videoCodec, videoStreamIndex: videoStream.index, videoTimebase: sourceCodecParams.videoTimebase, allFilesMeta, copyFileStreams: copyFileStreamsFiltered, ffmpegExperimental,
+        });
+        return { path: finalOutPath, created: true };
+      }
+
       // eslint-disable-next-line no-shadow
       async function cutEncodeSmartPartWrapper({ cutFrom, cutTo, outPath }: { cutFrom: number, cutTo: number, outPath: string }) {
         if (await shouldSkipExistingFile(outPath)) return;
@@ -891,7 +978,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
         invariant(sourceCodecParams.videoTimebase != null);
         invariant(filePath != null);
         invariant(outFormat != null);
-        await cutEncodeSmartPart({ cutFrom, cutTo, outPath, outFormat, videoCodec, videoStreamIndex: videoStream.index, videoTimebase: sourceCodecParams.videoTimebase, allFilesMeta, copyFileStreams: copyFileStreamsFiltered, ffmpegExperimental, hasBFrames: sourceCodecParams.videoStream.has_b_frames });
+        await cutEncodeSmartPart({ cutFrom, cutTo, outPath, outFormat, videoCodec, videoStreamIndex: videoStream.index, videoTimebase: sourceCodecParams.videoTimebase, allFilesMeta, copyFileStreams: copyFileStreamsFiltered, ffmpegExperimental });
       }
 
       const cutEncodeWholePart = async () => {
@@ -964,7 +1051,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
     } finally {
       if (chaptersPath) await tryDeleteFiles([chaptersPath]);
     }
-  }, [shouldSkipExistingFile, isEncoding, filePath, lossyMode, losslessCutSingle, cutEncodeSmartPart, concatFiles, concatFilesTs, forceFixConcat]);
+  }, [shouldSkipExistingFile, isEncoding, filePath, lossyMode, losslessCutSingle, cutEncodeSmartPart, cutEncodeCropSegment, concatFiles, concatFilesTs, forceFixConcat]);
 
   const concatCutSegments = useCallback(async ({ customOutDir, outFormat, segmentPaths, ffmpegExperimental, onProgress, preserveMovData, movFastStart, chapterNames, preserveMetadataOnMerge, mergedOutFilePath }: {
     customOutDir: string | undefined,

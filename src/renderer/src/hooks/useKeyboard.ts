@@ -4,6 +4,7 @@ import type { KeyBinding, KeyboardAction } from '../../../common/types';
 import { allModifiers, altModifiers, controlModifiers, metaModifiers, shiftModifiers } from '../util';
 import type { KeyboardLayoutMap } from '../types';
 import isDev from '../isDev';
+import type { CropSelectorHandle } from '../components/CropSelector';
 
 
 /* Keyboard testing points (when making large changes):
@@ -32,6 +33,8 @@ export default ({ keyBindings, keyUpActions, getKeyboardAction, closeExportConfi
 
   const altActionRef = useRef<boolean>(false);
 
+  const cropSelectorHandleRef = useRef<CropSelectorHandle>(null);
+
   const onKeyUp2 = useCallback(({ action }: KeyEventParams) => {
     const fn = action && keyUpActions[action];
     fn?.();
@@ -51,6 +54,12 @@ export default ({ keyBindings, keyUpActions, getKeyboardAction, closeExportConfi
       if (action !== 'export') {
         return; // stop here, don't allow other key actions than export while dialog is open
       }
+    }
+
+    // 处理选区框的MOVE/RESIZE，已处理则直接退出
+    if (cropSelectorHandleRef.current) {
+      const processed = cropSelectorHandleRef.current.handleKeyDown(e);
+      if (processed) { e.preventDefault(); e.stopPropagation(); return; }
     }
 
     // From now on, only handle key events when focus is on document body
@@ -178,5 +187,6 @@ export default ({ keyBindings, keyUpActions, getKeyboardAction, closeExportConfi
   return {
     keyboardLayoutMap,
     updateKeyboardLayout,
+    cropSelectorHandleRef,
   };
 };
