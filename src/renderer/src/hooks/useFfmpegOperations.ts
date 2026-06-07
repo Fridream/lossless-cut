@@ -360,7 +360,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
       ];
 
       const ffmpegCommandLine = getFfCommandLine('ffmpeg', concatArgs);
-      const fullCommandLine = `echo -e "${concatTxt.replace(/\n/, String.raw`\n`)}" | ${ffmpegCommandLine}`;
+      const fullCommandLine = `echo -e "${concatTxt.replaceAll('\n', String.raw`\n`)}" | ${ffmpegCommandLine}`;
       console.log(fullCommandLine);
       appendLastCommandsLog(fullCommandLine);
 
@@ -385,7 +385,7 @@ function useFfmpegOperations({ filePath, treatInputFileModifiedTimeAsStart, trea
         ];
 
         const mkvConcatCommandLine = getFfCommandLine('ffmpeg', mkvConcatArgs);
-        const mkvFullCommandLine = `echo -e "${mkvConcatTxt.replace(/\n/, String.raw`\n`)}" | ${mkvConcatCommandLine}`;
+        const mkvFullCommandLine = `echo -e "${mkvConcatTxt.replaceAll('\n', String.raw`\n`)}" | ${mkvConcatCommandLine}`;
         console.log(mkvFullCommandLine);
         appendLastCommandsLog(mkvFullCommandLine);
 

@@ -30,9 +30,6 @@ import ExportSheet from './ExportSheet';
 import ToggleExportConfirm from './ToggleExportConfirm';
 import type { LossyMode } from '../../../main';
 import AnimatedTr from './AnimatedTr';
-import type { Frame } from '../ffmpeg';
-import type { FindNearestKeyframeTime } from '../hooks/useKeyframes';
-import { troubleshootingUrl } from '../../../common/constants';
 import OutDirSelector from './OutDirSelector';
 import mainApi from '../mainApi';
 
@@ -135,8 +132,6 @@ function ExportConfirm({
   toggleSettings,
   outputPlaybackRate,
   lossyMode,
-  neighbouringKeyFrames,
-  findNearestKeyFrameTime,
   smartCutCrf,
   setSmartCutCrf,
   smartCutPreset,
@@ -167,8 +162,6 @@ function ExportConfirm({
   toggleSettings: () => void,
   outputPlaybackRate: number,
   lossyMode: LossyMode | undefined,
-  neighbouringKeyFrames: Frame[],
-  findNearestKeyFrameTime: FindNearestKeyframeTime,
   smartCutCrf: number,
   setSmartCutCrf: Dispatch<SetStateAction<number>>,
   smartCutPreset: SmartCutPreset,
@@ -179,7 +172,7 @@ function ExportConfirm({
 }) {
   const { t } = useTranslation();
 
-  const { preserveMovData, setPreserveMovData, preserveMetadata, setPreserveMetadata, preserveChapters, setPreserveChapters, movFastStart, setMovFastStart, autoDeleteMergedSegments, exportConfirmEnabled, toggleExportConfirmEnabled, segmentsToChapters, setSegmentsToChapters, preserveMetadataOnMerge, setPreserveMetadataOnMerge, effectiveExportMode, enableOverwriteOutput, setEnableOverwriteOutput, ffmpegExperimental, setFfmpegExperimental, cutFromAdjustmentFrames, setCutFromAdjustmentFrames, cutToAdjustmentFrames, setCutToAdjustmentFrames, setCutFileTemplate, setCutMergedFileTemplate, simpleMode, keyframesEnabled } = useUserSettings();
+  const { preserveMovData, setPreserveMovData, preserveMetadata, setPreserveMetadata, preserveChapters, setPreserveChapters, movFastStart, setMovFastStart, autoDeleteMergedSegments, exportConfirmEnabled, toggleExportConfirmEnabled, segmentsToChapters, setSegmentsToChapters, preserveMetadataOnMerge, setPreserveMetadataOnMerge, effectiveExportMode, enableOverwriteOutput, setEnableOverwriteOutput, ffmpegExperimental, setFfmpegExperimental, cutFromAdjustmentFrames, setCutFromAdjustmentFrames, cutToAdjustmentFrames, setCutToAdjustmentFrames, setCutFileTemplate, setCutMergedFileTemplate, simpleMode } = useUserSettings();
 
   const [showAdvanced, setShowAdvanced] = useState(!simpleMode);
 
@@ -194,17 +187,6 @@ function ExportConfirm({
 
   // some thumbnail streams (png,jpg etc) cannot always be cut correctly, so we warn if they try to.
   const areWeCuttingProblematicStreams = areWeCutting && mainCopiedThumbnailStreams.length > 0;
-
-  const haveSegmentWithProblematicKeyframe = useMemo(() => {
-    if (neighbouringKeyFrames.length === 0) return false; // we don't know
-    return segmentsToExport.some(({ start, end }) => {
-      const nearestPreviousKeyframeTime = findNearestKeyFrameTime({ time: start, direction: -1 }) ?? 0;
-      const segmentDuration = end - start;
-      const estimatedExportedSegmentDuration = end - nearestPreviousKeyframeTime;
-      // if estimated actual output length of segment is more than 1.5 times the intended segment duration, then we consider it problematic and warn the user about it.
-      return estimatedExportedSegmentDuration > segmentDuration * 1.5;
-    });
-  }, [neighbouringKeyFrames.length, segmentsToExport, findNearestKeyFrameTime]);
 
   const notices = useMemo(() => {
     const specific: Record<'exportMode' | 'problematicStreams' | 'movFastStart' | 'preserveMovData' | 'overwriteOutput', Notice | undefined> = {
@@ -229,9 +211,6 @@ function ExportConfirm({
       if (outputPlaybackRate !== 1) {
         generic.push({ warning: true, text: t('Adjusting the output FPS and cutting at the same time will cause incorrect cuts. Consider instead doing it in two separate steps.') });
       }
-      if (keyframesEnabled && haveSegmentWithProblematicKeyframe) {
-        generic.push({ warning: true, text: t('A segment may result in an unexpectedly long output file length after exporting, because your video file doesn\'t have any keyframes near the start time of the segment you\'re trying to cut.'), url: troubleshootingUrl });
-      }
     }
 
     return {
@@ -239,7 +218,7 @@ function ExportConfirm({
       specific,
       totalNum: generic.filter((n) => n.warning).length + Object.values(specific).filter((n) => n != null && n.warning).length,
     };
-  }, [areWeCutting, areWeCuttingProblematicStreams, effectiveExportMode, enableOverwriteOutput, isIpod, isMov, keyframesEnabled, mainCopiedThumbnailStreams, movFastStart, outFormat, outputPlaybackRate, preserveMovData, haveSegmentWithProblematicKeyframe, t]);
+  }, [areWeCutting, areWeCuttingProblematicStreams, effectiveExportMode, enableOverwriteOutput, isIpod, isMov, mainCopiedThumbnailStreams, movFastStart, outFormat, outputPlaybackRate, preserveMovData, t]);
 
   const exportModeDescription = useMemo(() => ({
     segments_to_chapters: t('Don\'t cut the file, but instead export an unmodified original which has chapters generated from segments'),

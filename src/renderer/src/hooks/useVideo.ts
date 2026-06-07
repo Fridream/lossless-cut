@@ -70,7 +70,7 @@ export default ({ filePath }: { filePath: string | undefined }) => {
 
   const resetPlayingRefreshIntervalRef = useCallback((create?: boolean) => {
     const renew = create ?? !!playingRefreshIntervalRef.current; clearInterval(playingRefreshIntervalRef.current); playingRefreshIntervalRef.current = undefined;
-    const delay = (ffmpegExtractWindow * (videoRef.current?.playbackRate ?? 1) * 1000) / 4;
+    const delay = (ffmpegExtractWindow * 1000) / (videoRef.current?.playbackRate || 1) / 4;
     if (renew) playingRefreshIntervalRef.current = setInterval(() => videoRef.current && setCommandedTimeIn(videoRef.current.currentTime), delay);
   }, [setCommandedTimeIn]);
   useEffect(() => () => resetPlayingRefreshIntervalRef(false), [filePath, resetPlayingRefreshIntervalRef]);

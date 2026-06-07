@@ -1669,11 +1669,12 @@ function App() {
   const toggleSettings = useCallback(() => setSettingsVisible((val) => !val), []);
 
   const seekClosestKeyframe = useCallback((direction: number) => {
+    let seekTimeBase = getRelevantTime();
     const sigma = detectedFps ? (1 / detectedFps) : 0.1; // because we don't want it to find the keyframe we're currently at.
-    const time = findNearestKeyFrameTime({ time: getRelevantTime() + direction * sigma, direction });
-    if (time == null) return;
-    seekAbs(time);
-  }, [detectedFps, findNearestKeyFrameTime, getRelevantTime, seekAbs]);
+    if (playingRef.current && direction < 0 && seekTimeBase > 1) seekTimeBase -= 1;
+    else seekTimeBase += direction * sigma;
+    seekAbs(findNearestKeyFrameTime({ time: seekTimeBase, direction }));
+  }, [detectedFps, findNearestKeyFrameTime, getRelevantTime, seekAbs, playingRef]);
 
   const onTimelineWheel = useTimelineScroll({ wheelSensitivity, mouseWheelZoomModifierKey, mouseWheelFrameSeekModifierKey, mouseWheelKeyframeSeekModifierKey, invertTimelineScroll, zoomRel, seekRel, shortStep, seekClosestKeyframe });
 
@@ -2878,7 +2879,7 @@ function App() {
 
                 {/* Dialogs */}
 
-                <ExportConfirm areWeCutting={areWeCutting} segmentsOrInverse={segmentsOrInverse} segmentsToExport={segmentsToExport} willMerge={willMerge} visible={exportConfirmOpen} onClosePress={closeExportConfirm} onExportConfirm={onExportConfirm} renderOutFmt={renderOutFmt} outputDir={outputDir} numStreamsTotal={numStreamsTotal} numStreamsToCopy={numStreamsToCopy} onShowStreamsSelectorClick={handleShowStreamsSelectorClick} outFormat={fileFormat} cutFileTemplate={cutFileTemplateOrDefault} cutMergedFileTemplate={cutMergedFileTemplateOrDefault} generateCutFileNames={generateCutFileNames} generateCutMergedFileNames={generateCutMergedFileNames} currentSegIndexSafe={currentSegIndexSafe} mainCopiedThumbnailStreams={mainCopiedThumbnailStreams} toggleSettings={toggleSettings} outputPlaybackRate={outputPlaybackRate} lossyMode={lossyMode} neighbouringKeyFrames={neighbouringKeyFrames} findNearestKeyFrameTime={findNearestKeyFrameTime} smartCutCrf={smartCutCrf} setSmartCutCrf={setSmartCutCrf} smartCutPreset={smartCutPreset} setSmartCutPreset={setSmartCutPreset} forceFixConcat={forceFixConcat} setForceFixConcat={setForceFixConcat} exportInfo={exportInfo} />
+                <ExportConfirm areWeCutting={areWeCutting} segmentsOrInverse={segmentsOrInverse} segmentsToExport={segmentsToExport} willMerge={willMerge} visible={exportConfirmOpen} onClosePress={closeExportConfirm} onExportConfirm={onExportConfirm} renderOutFmt={renderOutFmt} outputDir={outputDir} numStreamsTotal={numStreamsTotal} numStreamsToCopy={numStreamsToCopy} onShowStreamsSelectorClick={handleShowStreamsSelectorClick} outFormat={fileFormat} cutFileTemplate={cutFileTemplateOrDefault} cutMergedFileTemplate={cutMergedFileTemplateOrDefault} generateCutFileNames={generateCutFileNames} generateCutMergedFileNames={generateCutMergedFileNames} currentSegIndexSafe={currentSegIndexSafe} mainCopiedThumbnailStreams={mainCopiedThumbnailStreams} toggleSettings={toggleSettings} outputPlaybackRate={outputPlaybackRate} lossyMode={lossyMode} smartCutCrf={smartCutCrf} setSmartCutCrf={setSmartCutCrf} smartCutPreset={smartCutPreset} setSmartCutPreset={setSmartCutPreset} forceFixConcat={forceFixConcat} setForceFixConcat={setForceFixConcat} exportInfo={exportInfo} />
 
                 <Dialog.Root open={streamsSelectorShown} onOpenChange={setStreamsSelectorShown}>
                   <Dialog.Portal>
