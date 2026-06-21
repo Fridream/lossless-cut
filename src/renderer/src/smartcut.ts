@@ -1,6 +1,6 @@
 import { getRealVideoStreams, getVideoTimebase } from './util/streams';
 
-import { readFramesAroundTime, readKeyframesAroundTime, findNextKeyframe } from './ffmpeg';
+import { readFramesAroundTime, readKeyframesAroundTime, isIDRFrame } from './ffmpeg';
 import type { FFprobeStream } from '../../common/ffprobe';
 import { readFileSize } from './util';
 
@@ -12,20 +12,21 @@ export async function needsSmartCut({ path, exactCutFrom, exactCutTo, fileDurati
   exactCutFrom: number,
   exactCutTo: number,
   fileDuration: number | undefined,
-  videoStream: Pick<FFprobeStream, 'index'>,
+  videoStream: Pick<FFprobeStream, 'index' | 'codec_name'>,
 }) {
   let losslessCutFrom; // 有值时表示需要头smart cut，作为头编码的尾点，中/尾复制的起点
   let losslessCutTo; // 无值时表示需要整段重编码，有值时作为头/中复制的尾点
   let losslessCutToPTS; // 有值时表示需要尾smart cut，作为尾编码的起点
   const readFrames = async (aroundTime: number, window: number) => readFramesAroundTime({ filePath: path, streamIndex: videoStream.index, aroundTime, window });
   const readKeyframes = async (aroundTime: number, window: number) => readKeyframesAroundTime({ filePath: path, streamIndex: videoStream.index, aroundTime, window });
+  const checkKeyframe = async (PTSTime: number) => isIDRFrame({ filePath: path, streamIndex: videoStream.index, PTSTime, codecName: videoStream.codec_name });
 
   // 在最近10s内所有帧里找与切头时间最近的帧，如果是关键帧即头部不用切，否则用之后的且最近的关键帧
   let frames = await readFrames(exactCutFrom, 10); let keyFrames; let selectedFrame; let keyFrame;
-  for (const frame of frames) { if (frame.time === exactCutFrom) selectedFrame = frame; if (frame.keyframe && frame.time >= exactCutFrom) { keyFrame = frame; break; } }
-  if (selectedFrame?.keyframe) console.log('Start cut is already on exact keyframe', selectedFrame.time, selectedFrame);
+  for (const frame of frames) { if (frame.time === exactCutFrom) selectedFrame = frame; if (frame.keyframe && frame.time >= exactCutFrom && await checkKeyframe(frame.time)) { keyFrame = frame; break; } }
+  if (keyFrame && keyFrame === selectedFrame) console.log('Start cut is already on exact keyframe', selectedFrame.time, selectedFrame);
   else {
-    if (!keyFrame) { keyFrames = await readKeyframes(exactCutFrom, 60); keyFrame = findNextKeyframe(keyFrames, exactCutFrom); }
+    if (!keyFrame) { keyFrames = await readKeyframes(exactCutFrom, 60); for (const key of keyFrames) if (key.time > exactCutFrom && await checkKeyframe(key.time)) { keyFrame = key; break; } }
     // 找不到下一个关键帧时或者切尾在下一个关键帧前时直接整段重编码
     if (!keyFrame || keyFrame.time >= exactCutTo) return { losslessCutFrom, losslessCutTo, losslessCutToPTS };
     console.log('Smart cut from keyframe', { keyframe: keyFrame.time, exactCutFrom });

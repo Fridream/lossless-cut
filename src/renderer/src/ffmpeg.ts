@@ -67,6 +67,38 @@ function getIntervalAroundTime(time: number, window: number) {
   };
 }
 
+export async function isIDRFrame({ filePath, PTSTime, streamIndex, codecName }: {
+  filePath: string,
+  PTSTime: number,
+  streamIndex: number,
+  codecName: string,
+}) {
+  const idrNalType: Record<string, number> = { h264: 5, hevc: 20 };
+  const idrType = idrNalType[codecName];
+  if (idrType == null) {
+    console.warn(`isIDRFrame: 不支持对编码 "${codecName}" 检测 IDR，按普通关键帧处理`);
+    return true;
+  }
+
+  const { stderr } = await runFfmpeg([
+    '-hide_banner',
+    '-ss', String(PTSTime),
+    '-i', filePath,
+    '-map', `0:${streamIndex}`,
+    '-frames:v', '1',
+    '-c', 'copy',
+    '-copypriorss', '0',
+    '-bsf:v', 'trace_headers',
+    '-f', 'null', '-',
+  ], {}, { logCli: false });
+
+  const text = new TextDecoder().decode(stderr);
+  for (const m of text.matchAll(/nal_unit_type\s+[^=]*=\s*(\d+)/g)) {
+    if (Number(m[1]) === idrType) return true;
+  }
+  return false;
+}
+
 export interface Frame {
   time: number,
   DTSTime: number,

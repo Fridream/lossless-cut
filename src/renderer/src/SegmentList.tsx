@@ -158,14 +158,16 @@ const Segment = memo(({
 
   const duration = useMemo(() => (seg.end == null ? undefined : seg.end - seg.start), [seg]);
   const estimatedSize = useMemo(() => getSegEstimatedSize(seg), [getSegEstimatedSize, seg]);
-  const [segmentOpType, setSegmentOpType] = useState<SegmentOpType>('');
+  const [segmentOpType, setSegmentOpType] = useState<SegmentOpType | '计算中'>('');
   const initial = 'initial' in seg ? seg.initial : undefined;
   const cropArea = 'cropArea' in seg ? seg.cropArea : undefined;
   useEffect(() => {
     (async () => {
       if (invertCutSegments) { setSegmentOpType(''); return; }
       if (initial) { setSegmentOpType('全复制'); return; }
-      setSegmentOpType(await getSegmentOpType({ start: seg.start, end: seg.end, cropArea }));
+      setSegmentOpType('计算中');
+      const sgOpType = await getSegmentOpType({ start: seg.start, end: seg.end, cropArea });
+      setSegmentOpType(sgOpType);
     })();
   }, [seg.start, seg.end, initial, cropArea, getSegmentOpType, invertCutSegments]);
 

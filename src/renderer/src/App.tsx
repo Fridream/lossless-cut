@@ -685,8 +685,8 @@ function App() {
   const shouldShowWaveform = calcShouldShowWaveform(zoomedDuration) || overviewWaveform != null;
 
   const areWeCutting = useMemo(() => segmentsToExport.some(({ start, end, cropArea }) => isCuttingStart(start) || isCuttingEnd(end, fileDuration) || cropArea), [fileDuration, segmentsToExport]);
-  const getSegmentOpType = useCallback(async (segment: { start: number, end?: number | undefined, cropArea?: CropArea | undefined }): Promise<SegmentOpType> => {
-    if (!filePath || !mainVideoStream || segment.end == null) return ''; if (lossyMode || segment.cropArea) return '全重编';
+  const getSegmentOpType = useCallback(async (segment: { start: number, end: number }): Promise<SegmentOpType> => {
+    if (!filePath || !mainVideoStream) throw new Error('filePath或mainVideoStream异常，无法计算SegmentOpType');
     let frames = await readFramesAroundTime({ filePath, streamIndex: mainVideoStream.index, aroundTime: segment.start, window: 3 }); let minNearTime = 3; let minNearFrame;
     for (const frame of frames) if (Math.abs(frame.time - segment.start) < minNearTime) { minNearTime = Math.abs(frame.time - segment.start); minNearFrame = frame; }
     const exactCutFrom = minNearFrame!.time;
@@ -697,9 +697,15 @@ function App() {
     if (losslessCutTo == null) return '全重编'; if (losslessCutFrom == null && losslessCutToPTS == null) return '全复制';
     if (losslessCutFrom == null) return '尾重编'; if (losslessCutToPTS == null) return '头重编'; return '双重编';
   }, [filePath, fileDuration, mainVideoStream]);
+  const segmentOpTypeCache = useRef<Map<string, Promise<SegmentOpType>>>(new Map());
+  const getSegmentOpTypeWithCache = useCallback(async (segment: { start: number, end?: number | undefined, cropArea?: CropArea | undefined }): Promise<SegmentOpType> => {
+    if (!filePath || !mainVideoStream || segment.end == null) return ''; if (lossyMode || segment.cropArea) return '全重编'; const segmentOpTypeKey = `${segment.start}-${segment.end}`;
+    let promise = segmentOpTypeCache.current.get(segmentOpTypeKey); if (promise) return promise; promise = getSegmentOpType({ start: segment.start, end: segment.end });
+    segmentOpTypeCache.current.set(segmentOpTypeKey, promise); promise.catch(() => segmentOpTypeCache.current.delete(segmentOpTypeKey)); return promise;
+  }, [filePath, mainVideoStream, getSegmentOpType]);
   const [exportInfo, setExportInfo] = useState({ copyCount: 1, encodeCount: 0, concatCount: 0 });
   useEffect(() => {
-    Promise.all(segmentsToExport.map((segment) => getSegmentOpType(segment))).then((segmentsOpType) => {
+    Promise.all(segmentsToExport.map((segment) => getSegmentOpTypeWithCache(segment))).then((segmentsOpType) => {
       if (segmentsOpType.length === 0) { setExportInfo({ copyCount: 1, encodeCount: 0, concatCount: 0 }); return; }
       let copyCount = 0; let encodeCount = 0; let concatCount = 0;
       for (const segmentOpType of segmentsOpType) {
@@ -712,7 +718,7 @@ function App() {
         }
       } setExportInfo({ copyCount, encodeCount, concatCount });
     });
-  }, [segmentsToExport, getSegmentOpType]);
+  }, [segmentsToExport, getSegmentOpTypeWithCache]);
 
   const {
     concatFiles, html5ifyDummy, cutMultiple, concatCutSegments, html5ify, fixInvalidDuration, decimate, extractStreams, tryDeleteFiles,
@@ -801,6 +807,7 @@ function App() {
     setOutputPlaybackRateState(1);
     setCurrentFileExportCount(0);
     setIsCropSelecting(false);
+    segmentOpTypeCache.current.clear();
   }, [videoRef, setCommandedTime, setPlaybackRate, setPreviewFilePath, setUsingDummyVideo, setPlaying, playingRef, setPlaybackMode, cutSegmentsHistory, setDetectedFileFormat, setCopyStreamIdsByFile, setThumbnails, setSubtitlesByStreamId, setOutputPlaybackRateState]);
 
 
@@ -2776,7 +2783,7 @@ function App() {
                         setEditingSegmentTagsSegmentIndex={setEditingSegmentTagsSegmentIndex}
                         onEditSegmentTags={onEditSegmentTags}
                         getSegEstimatedSize={getSegEstimatedSize}
-                        getSegmentOpType={getSegmentOpType}
+                        getSegmentOpType={getSegmentOpTypeWithCache}
                       />
                     )}
                   </AnimatePresence>
